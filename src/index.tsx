@@ -7,6 +7,7 @@ import {
     loadAssignments, loadCategories, newId, paletteColor, saveAssignments, saveCategories,
 } from "./categories";
 import { buildEnvelope, encodeGlb, translationMatrix } from "./envelope";
+import { RenderSpike } from "./RenderSpike";
 import {
     ImportPlan, buildExportRows, categoryValueName, decodeText, parseTable, planImport, toCsv, toTsv,
 } from "./table";
@@ -918,6 +919,12 @@ function App() {
         }
     };
 
+    // Put the scene back after a temporary recolour (used by the render spike's ID pass).
+    const restoreColours = async () => {
+        if (appliedMode) await colorBuildings();
+        else await Promise.all([Forma.render.elementColors.clearAll(), Forma.render.cleanup()]);
+    };
+
     // Keep the scene in step when the category being shown is edited or reassigned.
     useEffect(() => {
         if (activeCategory && appliedMode === colorMode && !isColoring) colorBuildings();
@@ -1234,6 +1241,12 @@ function App() {
                             </p>
                         </div>
                     )}
+
+                    <RenderSpike
+                        buildingPaths={buildingData.map((b) => b.path)}
+                        restoreColours={restoreColours}
+                        disabled={isLoading || isColoring}
+                    />
 
                     <div class="section">
                         <h3>Export</h3>
