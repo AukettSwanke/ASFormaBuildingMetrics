@@ -8,6 +8,7 @@ import {
 } from "./categories";
 import { buildEnvelope, encodeGlb, translationMatrix } from "./envelope";
 import { RenderSpike } from "./RenderSpike";
+import { RenderEngine } from "./RenderEngine";
 import {
     ImportPlan, buildExportRows, categoryValueName, decodeText, parseTable, planImport, toCsv, toTsv,
 } from "./table";
@@ -919,6 +920,12 @@ function App() {
         }
     };
 
+    // Colour each building currently shows in the panel, for the panel-engine render.
+    const panelColours = useMemo(
+        () => new Map(buildingData.map((b) => [b.path, getBuildingColor(b)] as const)),
+        [buildingData, colorMode, categories, assignments],
+    );
+
     // Put the scene back after a temporary recolour (used by the render spike's ID pass).
     const restoreColours = async () => {
         if (appliedMode) await colorBuildings();
@@ -1246,6 +1253,12 @@ function App() {
                         buildingPaths={buildingData.map((b) => b.path)}
                         restoreColours={restoreColours}
                         disabled={isLoading || isColoring}
+                    />
+
+                    <RenderEngine
+                        buildingPaths={buildingData.map((b) => b.path)}
+                        panelColours={panelColours}
+                        disabled={isLoading}
                     />
 
                     <div class="section">
