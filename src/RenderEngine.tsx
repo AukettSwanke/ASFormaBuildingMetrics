@@ -35,7 +35,8 @@ const targetOf = (e: Event) => e.target as HTMLInputElement;
 const CHECKERBOARD = 'repeating-conic-gradient(#d8d8d8 0% 25%, #ffffff 0% 50%) 50% / 16px 16px';
 
 /**
- * Spike for option B: draw the Forma scene with our own three.js renderer in the panel.
+ * Draws the Forma scene with our own three.js renderer in the panel, and exports it: lines, lighting,
+ * presets, transparent backgrounds, shadow studies and layered shadow images.
  * three.js is imported on first use so it does not weigh down the rest of the panel.
  */
 export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }: {

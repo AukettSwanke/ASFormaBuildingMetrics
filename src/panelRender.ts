@@ -1,4 +1,4 @@
-// Panel render engine (option B spike): draws the Forma scene with three.js inside the panel,
+// Panel render engine: draws the Forma scene with three.js inside the panel,
 // so line weight, lighting and presets are fully ours. Loaded lazily from RenderEngine.tsx.
 //
 // Forma world space is metres, Z up, so the camera simply uses Z as "up".
