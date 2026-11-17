@@ -213,7 +213,7 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         ))}
                     </div>
                     <div class="row row--wrap">
-                        <label class="muted" for="re-weight">Line weight (px)</label>
+                        <label class="muted" for="re-weight">Edge lines (px)</label>
                         <input id="re-weight" type="range" min="0.05" max="8" step="0.05" value={style.lineWeight}
                             onInput={(e) => patch({ lineWeight: Number(targetOf(e).value) })} />
                         <input type="number" min="0.01" max="20" step="0.05" value={style.lineWeight} style={{ width: '6em' }}
@@ -221,6 +221,26 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                                 const v = Number(targetOf(e).value);
                                 if (v > 0) patch({ lineWeight: Math.min(v, 20) });
                             }} />
+                    </div>
+                    <div class="row row--wrap">
+                        <label class="muted">
+                            <input type="checkbox" checked={style.silhouettes}
+                                onChange={(e) => patch({ silhouettes: targetOf(e).checked })} /> Silhouettes
+                        </label>
+                        <input type="range" min="0.05" max="8" step="0.05" value={style.silhouetteWeight}
+                            disabled={!style.silhouettes} aria-label="Silhouette weight"
+                            onInput={(e) => patch({ silhouetteWeight: Number(targetOf(e).value) })} />
+                        <input type="number" min="0.01" max="20" step="0.05" value={style.silhouetteWeight} style={{ width: '6em' }}
+                            disabled={!style.silhouettes} aria-label="Silhouette weight in pixels"
+                            onInput={(e) => {
+                                const v = Number(targetOf(e).value);
+                                if (v > 0) patch({ silhouetteWeight: Math.min(v, 20) });
+                            }} />
+                    </div>
+                    <div class="row row--wrap">
+                        <label class="muted" for="re-depth">Depth weighting {Math.round(style.depthWeight * 100)}%</label>
+                        <input id="re-depth" type="range" min="0" max="1" step="0.05" value={style.depthWeight}
+                            onInput={(e) => patch({ depthWeight: Number(targetOf(e).value) })} />
                     </div>
                     <div class="row row--wrap">
                         <label class="muted" for="re-line">Line</label>
