@@ -66,28 +66,33 @@ export interface RenderStyle {
     /** 0–1 */
     sunIntensity: number;
     shadows: boolean;
+    /**
+     * Apparent size of the sun in degrees (0 = hard-edged shadows, the real sun is about 0.5). The
+     * penumbra grows with distance from the object casting the shadow, as in life.
+     */
+    shadowSoftness: number;
 }
 
 export const PRESETS: Record<string, RenderStyle> = {
     'Line drawing': {
         background: '#ffffff', transparent: false, contextMode: 'shown', shadowOpacity: 0.35, buildingColour: '#ffffff', contextColour: '#ffffff', lineColour: '#111111',
         lineWeight: 1, silhouettes: true, silhouetteWeight: 2.5, depthWeight: 0.5,
-        ambient: 1, sunIntensity: 0, shadows: false,
+        ambient: 1, sunIntensity: 0, shadows: false, shadowSoftness: 0,
     },
     'Clay': {
         background: '#e9e6df', transparent: false, contextMode: 'shown', shadowOpacity: 0.35, buildingColour: '#f4f1ea', contextColour: '#d9d5cc', lineColour: '#3a3a3a',
         lineWeight: 1, silhouettes: true, silhouetteWeight: 2, depthWeight: 0.4,
-        ambient: 0.45, sunIntensity: 0.9, shadows: true,
+        ambient: 0.45, sunIntensity: 0.9, shadows: true, shadowSoftness: 0,
     },
     'Panel colours': {
         background: '#f5f5f5', transparent: false, contextMode: 'shown', shadowOpacity: 0.35, buildingColour: null, contextColour: '#e0e0e0', lineColour: '#222222',
         lineWeight: 1, silhouettes: true, silhouetteWeight: 2, depthWeight: 0.4,
-        ambient: 0.6, sunIntensity: 0.7, shadows: true,
+        ambient: 0.6, sunIntensity: 0.7, shadows: true, shadowSoftness: 0,
     },
     'Night': {
         background: '#0b1220', transparent: false, contextMode: 'shown', shadowOpacity: 0.35, buildingColour: '#1c2a44', contextColour: '#121a2b', lineColour: '#8fb4ff',
         lineWeight: 1, silhouettes: true, silhouetteWeight: 1.8, depthWeight: 0.3,
-        ambient: 0.25, sunIntensity: 0.35, shadows: true,
+        ambient: 0.25, sunIntensity: 0.35, shadows: true, shadowSoftness: 0,
     },
 };
 
@@ -104,10 +109,15 @@ export interface BuildingInput {
 
 /** three.js lights are not normalised any more, so 1 here means "albedo shows at full strength". */
 const LIGHT_SCALE = Math.PI;
+/** Renders averaged for soft shadows in exports: enough that the penumbra looks smooth at full size. */
+const EXPORT_SOFT_SAMPLES = 32;
 /** Creases sharper than this (degrees) get a line. */
 const EDGE_ANGLE = 20;
 
 export class PanelRenderer {
+    /** Largest band (in pixels) drawn at once while averaging soft shadows. Static so tests can shrink it. */
+    static softBandPixels = 1_500_000;
+
     readonly renderer: WebGLRenderer;
     private scene = new Scene();
     private perspective = new PerspectiveCamera(45, 1, 1, 10000);
@@ -136,6 +146,13 @@ export class PanelRenderer {
     private style: RenderStyle = PRESETS['Clay'];
     private panelColours = new Map<string, string>();
     private sunDir = new Vector3(0.4, -0.6, 0.7).normalize();
+    /**
+     * While averaging large frames, only a horizontal band of the view is drawn at a time (so the buffers
+     * stay small). `y` is the band's first row and `rows` its height, in pixels of the full frame.
+     */
+    private band: { y: number; rows: number } | null = null;
+    /** Direction the light actually comes from: the sun, or a nudged copy while averaging soft shadows. */
+    private lightDir = new Vector3(0.4, -0.6, 0.7).normalize();
     /** 0 with the sun below the horizon, rising to 1 by a few degrees of elevation. */
     private sunFade = 1;
     private width = 1;
@@ -292,6 +309,7 @@ export class PanelRenderer {
     /** `direction` points from the scene towards the sun. */
     setSunDirection(direction: [number, number, number]): void {
         this.sunDir.set(...direction).normalize();
+        this.lightDir.copy(this.sunDir);
         // Direction z is the sine of the elevation: fade the sun out between 0 and 6 degrees.
         const t = Math.max(0, Math.min(1, this.sunDir.z / Math.sin((6 * Math.PI) / 180)));
         this.sunFade = t * t * (3 - 2 * t);
@@ -313,7 +331,7 @@ export class PanelRenderer {
         const centre = this.bounds.getCenter(new Vector3());
         const r = Math.max(this.bounds.getBoundingSphere(new Sphere()).radius, 10);
         this.sunLight.target.position.copy(centre);
-        this.sunLight.position.copy(centre).addScaledVector(this.sunDir, r * 3);
+        this.sunLight.position.copy(centre).addScaledVector(this.lightDir, r * 3);
         const cam = this.sunLight.shadow.camera;
         cam.left = -r; cam.right = r; cam.top = r; cam.bottom = -r;
         cam.near = r * 0.5; cam.far = r * 6;
@@ -351,6 +369,7 @@ export class PanelRenderer {
             this.ortho.position.copy(position);
             this.ortho.lookAt(target);
             this.ortho.updateProjectionMatrix();
+            this.applyBand(this.ortho);
             return this.ortho;
         }
         this.perspective.fov = this.fov;
@@ -360,6 +379,7 @@ export class PanelRenderer {
         this.perspective.position.copy(position);
         this.perspective.lookAt(target);
         this.perspective.updateProjectionMatrix();
+        this.applyBand(this.perspective);
         return this.perspective;
     }
 
@@ -404,10 +424,16 @@ export class PanelRenderer {
         this.silhouetteLines.visible = true;
     }
 
+    /** Points the camera at the current band of the frame, or at the whole frame when there is no band. */
+    private applyBand(camera: PerspectiveCamera | OrthographicCamera): void {
+        if (this.band) camera.setViewOffset(this.width, this.height, 0, this.band.y, this.width, this.band.rows);
+        else camera.clearViewOffset();
+    }
+
     render(): void {
         const camera = this.activeCamera(this.width / this.height);
         const ratio = this.renderer.getPixelRatio();
-        const resolution = new Vector3(this.width * ratio, this.height * ratio, 0);
+        const resolution = new Vector3(this.width * ratio, (this.band ? this.band.rows : this.height) * ratio, 0);
         this.lineMaterial.resolution.set(resolution.x, resolution.y);
         this.silhouetteMaterial.resolution.set(resolution.x, resolution.y);
         // Line widths are in device pixels: weights are CSS px on screen, scaled up in proportion for exports.
@@ -428,6 +454,108 @@ export class PanelRenderer {
         this.renderer.render(this.scene, camera);
     }
 
+    /** True when shadows should be softened by averaging several renders. */
+    private get softShadows(): boolean {
+        return this.style.shadows && this.style.shadowSoftness > 0 && this.sunFade > 0;
+    }
+
+    /**
+     * A point on a disk of angular diameter `diameterDeg` around `base`, for sample `i` of `n`. The points
+     * follow a sunflower pattern, so any number of samples covers the disk evenly.
+     */
+    private jitteredDirection(base: Vector3, diameterDeg: number, i: number, n: number): Vector3 {
+        const radius = Math.tan((diameterDeg * Math.PI) / 360) * Math.sqrt((i + 0.5) / n);
+        const angle = i * 2.399963; // the golden angle
+        const helper = Math.abs(base.z) < 0.9 ? new Vector3(0, 0, 1) : new Vector3(1, 0, 0);
+        const u = new Vector3().crossVectors(base, helper).normalize();
+        const v = new Vector3().crossVectors(base, u);
+        return base.clone().addScaledVector(u, radius * Math.cos(angle)).addScaledVector(v, radius * Math.sin(angle)).normalize();
+    }
+
+    /**
+     * Renders the current view `samples` times with the sun moved around its apparent disk and averages
+     * the results, which gives smooth shadow edges that widen with distance from the occluder.
+     *
+     * The average is kept in floating point (an 8-bit running mean loses the later samples to rounding).
+     * Large frames are drawn in bands of at most `softBandPixels` pixels, so memory stays bounded at any
+     * export size. Colours are weighted by alpha, so transparent backgrounds average correctly.
+     */
+    private renderAveraged(samples: number): HTMLCanvasElement {
+        const source = this.renderer.domElement;
+        const ratio = this.renderer.getPixelRatio();
+        const width = source.width, height = source.height;
+        const out = document.createElement('canvas');
+        out.width = width;
+        out.height = height;
+        const outCtx = out.getContext('2d')!;
+        const scratch = document.createElement('canvas');
+        const scratchCtx = scratch.getContext('2d', { willReadFrequently: true })!;
+        const base = this.sunDir.clone();
+        // Bands change the renderer size, which is only exact at a pixel ratio of 1 (exports); the
+        // on-screen preview is small enough to draw in one go.
+        const bandRows = ratio === 1 ? Math.max(64, Math.floor(PanelRenderer.softBandPixels / width)) : height;
+        let banded = false;
+        try {
+            for (let y0 = 0; y0 < height; y0 += bandRows) {
+                const rows = Math.min(bandRows, height - y0);
+                if (rows !== height) {
+                    banded = true;
+                    this.band = { y: y0, rows };
+                    this.renderer.setSize(width, rows, false);
+                }
+                scratch.width = width;
+                scratch.height = rows;
+                const colour = new Float32Array(width * rows * 3);
+                const alpha = new Float32Array(width * rows);
+                for (let i = 0; i < samples; i++) {
+                    this.lightDir.copy(this.jitteredDirection(base, this.style.shadowSoftness, i, samples));
+                    this.updateSunShadow();
+                    this.render();
+                    scratchCtx.clearRect(0, 0, width, rows);
+                    scratchCtx.drawImage(source, 0, 0);
+                    const px = scratchCtx.getImageData(0, 0, width, rows).data;
+                    for (let p = 0, q = 0; p < alpha.length; p++, q += 4) {
+                        const a = px[q + 3] / 255;
+                        colour[p * 3] += px[q] * a;
+                        colour[p * 3 + 1] += px[q + 1] * a;
+                        colour[p * 3 + 2] += px[q + 2] * a;
+                        alpha[p] += a;
+                    }
+                }
+                const image = outCtx.createImageData(width, rows);
+                for (let p = 0, q = 0; p < alpha.length; p++, q += 4) {
+                    const a = alpha[p];
+                    if (a > 0) {
+                        image.data[q] = Math.round(colour[p * 3] / a);
+                        image.data[q + 1] = Math.round(colour[p * 3 + 1] / a);
+                        image.data[q + 2] = Math.round(colour[p * 3 + 2] / a);
+                    }
+                    image.data[q + 3] = Math.round((a / samples) * 255);
+                }
+                outCtx.putImageData(image, 0, y0);
+            }
+        } finally {
+            this.band = null;
+            if (banded) this.renderer.setSize(this.width, this.height, false);
+            this.lightDir.copy(base);
+            this.updateSunShadow();
+        }
+        return out;
+    }
+
+    /**
+     * Soft-shadow version of the current on-screen view, or null when shadows are hard. The caller shows
+     * it once the camera has been still for a moment; moving the camera falls back to the quick hard render.
+     */
+    renderSoftPreview(samples = 16): HTMLCanvasElement | null {
+        if (!this.softShadows) return null;
+        try {
+            return this.renderAveraged(samples);
+        } finally {
+            this.render(); // leave the visible canvas showing the plain render
+        }
+    }
+
     /** Renders at `width` pixels wide (same aspect as the screen), returns a PNG, then restores the screen size. */
     async exportPng(width: number): Promise<Blob> {
         const aspect = this.width / this.height;
@@ -439,8 +567,10 @@ export class PanelRenderer {
         this.height = exportHeight;
         this.render();
         try {
+            // Soft shadows are averaged over several renders; hard ones come straight from the canvas.
+            const source = this.softShadows ? this.renderAveraged(EXPORT_SOFT_SAMPLES) : this.renderer.domElement;
             return await new Promise<Blob>((resolve, reject) =>
-                this.renderer.domElement.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG export failed'))), 'image/png'));
+                source.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG export failed'))), 'image/png'));
         } finally {
             this.resize(prevWidth, prevHeight, prevRatio);
             this.render();
@@ -464,6 +594,10 @@ export class PanelRenderer {
             for (let i = 0; i < steps; i++) {
                 prepare(i);
                 this.render();
+                if (this.softShadows) {
+                    frames.push(this.renderAveraged(EXPORT_SOFT_SAMPLES));
+                    continue;
+                }
                 const copy = document.createElement('canvas');
                 copy.width = width;
                 copy.height = frameHeight;
