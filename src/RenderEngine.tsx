@@ -67,6 +67,14 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
     const [presetMessage, setPresetMessage] = useState<string | null>(null);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
     const presetFile = useRef<HTMLInputElement>(null);
+
+    // Soft shadows are drawn by averaging many renders, which is too slow while the camera moves. The plain
+    // render shows during interaction; once the view has been still for a moment, the averaged image is
+    // laid over it.
+    const [softCanvas, setSoftCanvas] = useState<HTMLCanvasElement | null>(null);
+    const softHost = useRef<HTMLDivElement>(null);
+    const softTimer = useRef<number | undefined>(undefined);
+    const scheduleSoftRef = useRef<() => void>(() => undefined);
     const [style, setStyle] = useState<RenderStyle | null>(null);
     const [overlay, setOverlay] = useState<string | null>(null);
     const [overlayOpacity, setOverlayOpacity] = useState(0.5);
@@ -96,7 +104,28 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
         if (!e || !el) return;
         e.resize(el.clientWidth, el.clientWidth / ASPECTS[aspect], Math.min(window.devicePixelRatio || 1, 2));
         e.render();
+        scheduleSoftRef.current();
     };
+
+    /** Hides the soft image at once (the view just changed) and draws a fresh one after a short pause. */
+    const scheduleSoft = () => {
+        window.clearTimeout(softTimer.current);
+        setSoftCanvas(null);
+        softTimer.current = window.setTimeout(() => {
+            const e = engine.current;
+            if (e) setSoftCanvas(e.renderSoftPreview(16));
+        }, 350);
+    };
+    scheduleSoftRef.current = scheduleSoft;
+
+    useEffect(() => {
+        const el = softHost.current;
+        if (!el) return;
+        if (!softCanvas) { el.replaceChildren(); return; }
+        softCanvas.style.cssText = 'display:block;width:100%;height:100%';
+        softCanvas.dataset.role = 'soft-shadow-preview';
+        el.replaceChildren(softCanvas);
+    }, [softCanvas]);
 
     // Style, aspect, FOV and sun rotation changes: push to the engine and redraw.
     useEffect(() => {
@@ -126,6 +155,7 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
 
     useEffect(() => () => {
         if (studyUrl.current) URL.revokeObjectURL(studyUrl.current);
+        window.clearTimeout(softTimer.current);
         unsubscribe.current?.();
         engine.current?.dispose();
         engine.current = null;
@@ -234,6 +264,7 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
                 lastCamera.current = state;
                 engine.current?.setView(state, FOV);
                 engine.current?.render();
+                scheduleSoftRef.current();
             });
             unsubscribe.current = sub.unsubscribe;
 
@@ -445,6 +476,7 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
                     width: '100%', display: 'block', border: '1px solid var(--border-default)',
                     background: style?.transparent ? CHECKERBOARD : undefined,
                 }} />
+                <div ref={softHost} style={{ position: 'absolute', inset: '0', pointerEvents: 'none' }} />
                 {overlay && (
                     <img src={overlay} alt="Forma view for comparison"
                         style={{ position: 'absolute', inset: '0', width: '100%', height: '100%', opacity: overlayOpacity, pointerEvents: 'none' }} />
@@ -562,6 +594,18 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
                         </select>
                     </div>
                     <div class="row row--wrap">
+                        <label class="muted" for="re-soft">Shadow softness {style.shadowSoftness.toFixed(1)}°</label>
+                        <input id="re-soft" type="range" min="0" max="10" step="0.1" value={style.shadowSoftness}
+                            disabled={!style.shadows}
+                            onInput={(e) => patch({ shadowSoftness: Number(targetOf(e).value) })} />
+                    </div>
+                    {style.shadows && style.shadowSoftness > 0 && (
+                        <p class="muted">
+                            The sun's apparent size: 0 gives hard edges, the real sun is about 0.5°. Shadows soften with distance
+                            from what casts them. The preview sharpens after you stop moving; exports take longer.
+                        </p>
+                    )}
+                    <div class="row row--wrap">
                         <label class="muted">
                             <input type="checkbox" checked={style.transparent}
                                 onChange={(e) => {
@@ -670,7 +714,7 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
                     </div>
                     <p class="muted">
                         {style.shadows
-                            ? `${studyCount} renders from ${formatClock(studyFrom)} to ${formatClock(studyTo)} on one sheet, ${exportWidth}px wide, using the current view, look and project time zone.`
+                            ? `${studyCount} renders from ${formatClock(studyFrom)} to ${formatClock(studyTo)} on one sheet, ${exportWidth}px wide, using the current view, look and project time zone.${style.shadowSoftness > 0 ? ' Soft shadows make this slower.' : ''}`
                             : 'Switch Shadows on first, otherwise the images will not show any.'}
                     </p>
                     {study && <img src={study.url} alt="Shadow study" style={{ width: '100%', display: 'block', border: '1px solid var(--border-default)' }} />}

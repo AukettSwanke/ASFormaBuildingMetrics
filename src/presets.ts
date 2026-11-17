@@ -36,16 +36,18 @@ export const sanitiseLook = (raw: any): LookStyle | null => {
     const depthWeight = bounded(raw.depthWeight, 0, 1);
     const ambient = bounded(raw.ambient, 0, 1.5);
     const sunIntensity = bounded(raw.sunIntensity, 0, 1.5);
+    // Presets saved before shadow softness existed have no value, which means hard shadows.
+    const shadowSoftness = raw.shadowSoftness === undefined ? 0 : bounded(raw.shadowSoftness, 0, 10);
     if (
         !background || !contextColour || !lineColour ||
         (raw.buildingColour !== null && !buildingColour) ||
         lineWeight === null || silhouetteWeight === null || depthWeight === null ||
-        ambient === null || sunIntensity === null ||
+        ambient === null || sunIntensity === null || shadowSoftness === null ||
         typeof raw.silhouettes !== 'boolean' || typeof raw.shadows !== 'boolean'
     ) return null;
     return {
         background, buildingColour, contextColour, lineColour, lineWeight,
-        silhouettes: raw.silhouettes, silhouetteWeight, depthWeight, ambient, sunIntensity, shadows: raw.shadows,
+        silhouettes: raw.silhouettes, silhouetteWeight, depthWeight, ambient, sunIntensity, shadows: raw.shadows, shadowSoftness,
     };
 };
 
@@ -68,7 +70,7 @@ export const toLook = (style: RenderStyle): LookStyle => ({
     background: style.background, buildingColour: style.buildingColour, contextColour: style.contextColour,
     lineColour: style.lineColour, lineWeight: style.lineWeight, silhouettes: style.silhouettes,
     silhouetteWeight: style.silhouetteWeight, depthWeight: style.depthWeight, ambient: style.ambient,
-    sunIntensity: style.sunIntensity, shadows: style.shadows,
+    sunIntensity: style.sunIntensity, shadows: style.shadows, shadowSoftness: style.shadowSoftness,
 });
 
 /** Applies a look while keeping the current export settings. */
