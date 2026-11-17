@@ -3,8 +3,16 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ContextMode, PanelRenderer, RenderStyle } from './panelRender';
 import { sunAngles, sunVector } from './sunPosition';
 import { fallbackZone, formatClock, isoDate, parseIsoDate, utcToZoned, zonedToUtc } from './timeZone';
+import { composeSheet, planSheet, studyTimes } from './studySheet';
 
 type SunMode = 'forma' | 'custom';
+/** Black or near-white text, whichever reads better on a sheet of the given background colour. */
+const readableOn = (hex: string): string => {
+    const n = parseInt(hex.replace('#', ''), 16);
+    const luma = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+    return luma > 0.55 ? '#222222' : '#f2f2f2';
+};
+
 /** Standard planning dates for shadow studies (equinoxes and solstices, rounded to the 21st). */
 const STUDY_DATES: [string, string][] = [['21 Mar', '03-21'], ['21 Jun', '06-21'], ['21 Sep', '09-21'], ['21 Dec', '12-21']];
 
@@ -55,6 +63,17 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
     /** Bumped whenever Forma's sun is re-read, so the sun effect runs again. */
     const [sunTick, setSunTick] = useState(0);
 
+    // Shadow study: several times on one date, laid out on a single sheet.
+    const [studyDate, setStudyDate] = useState('2026-12-21');
+    const [studyFrom, setStudyFrom] = useState(9 * 60);
+    const [studyTo, setStudyTo] = useState(15 * 60);
+    const [studyCount, setStudyCount] = useState(3);
+    const [studyColumns, setStudyColumns] = useState(3);
+    const [studyLabels, setStudyLabels] = useState(true);
+    const [study, setStudy] = useState<{ url: string; name: string } | null>(null);
+    const studySeeded = useRef(false);
+    const studyUrl = useRef<string | null>(null);
+
     const lastCamera = useRef<Parameters<PanelRenderer['setView']>[0] | null>(null);
 
     const redraw = () => {
@@ -82,6 +101,7 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
     }, [loaded, aspect]);
 
     useEffect(() => () => {
+        if (studyUrl.current) URL.revokeObjectURL(studyUrl.current);
         unsubscribe.current?.();
         engine.current?.dispose();
         engine.current = null;
@@ -96,6 +116,11 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
             location: location ?? null,
             zone: timezone ?? (location ? fallbackZone(location[1]) : 'UTC'),
         };
+        if (!studySeeded.current) {
+            // Start the study on Forma's current date, in the project's time zone.
+            studySeeded.current = true;
+            setStudyDate(isoDate(utcToZoned(date, formaSun.current.zone)));
+        }
         setSunTick((n) => n + 1);
     };
 
@@ -225,6 +250,51 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
             console.error(error);
             setStatus(`Overlay capture failed: ${error instanceof Error ? error.message : String(error)}`);
         } finally {
+            setBusy(false);
+        }
+    };
+
+    const createStudy = async () => {
+        const e = engine.current, info = formaSun.current, current = style;
+        const day = parseIsoDate(studyDate);
+        if (!e || !info?.location || !current || !day) return;
+        setBusy(true);
+        try {
+            setStatus('Rendering the shadow study…');
+            await new Promise((resolve) => setTimeout(resolve, 30)); // let the status paint before the heavy work
+            const [latitude, longitude] = info.location;
+            const times = studyTimes(studyFrom, studyTo, studyCount);
+            const angles = times.map((m) => sunAngles(
+                zonedToUtc({ ...day, hour: Math.floor(m / 60), minute: m % 60 }, info.zone), latitude, longitude,
+            ));
+            const plan = planSheet(exportWidth, studyColumns, times.length, e.aspect, studyLabels, true);
+            const frames = e.captureSequence(plan.tileWidth, times.length, (i) => e.setSunDirection(sunVector(angles[i])));
+            const tiles = frames.map((canvas, i) => ({
+                canvas,
+                time: formatClock(times[i]),
+                detail: angles[i].elevation > 0
+                    ? `azimuth ${angles[i].azimuth.toFixed(0)}° · elevation ${angles[i].elevation.toFixed(0)}°`
+                    : 'sun below the horizon',
+            }));
+            const dateLabel = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+                .format(new Date(Date.UTC(day.year, day.month - 1, day.day)));
+            const sheet = composeSheet(tiles, plan, {
+                title: `Shadow study · ${dateLabel} · ${info.zone}`,
+                labels: studyLabels,
+                background: current.transparent ? null : current.background,
+                textColour: current.transparent ? current.lineColour : readableOn(current.background),
+            });
+            const blob = await new Promise<Blob>((resolve, reject) =>
+                sheet.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG export failed'))), 'image/png'));
+            if (studyUrl.current) URL.revokeObjectURL(studyUrl.current);
+            studyUrl.current = URL.createObjectURL(blob);
+            setStudy({ url: studyUrl.current, name: `forma-shadow-study-${studyDate}${current.transparent ? '-transparent' : ''}.png` });
+            setStatus(null);
+        } catch (error) {
+            console.error(error);
+            setStatus(`Shadow study failed: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            setSunTick((n) => n + 1); // put the panel's sun back to the chosen mode
             setBusy(false);
         }
     };
@@ -396,6 +466,62 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         </>
                     )}
                     <p class="muted">{sunText}</p>
+
+                    <h3>Shadow study</h3>
+                    <div class="row row--wrap">
+                        <label class="muted" for="re-sdate">Date</label>
+                        <input id="re-sdate" type="date" value={studyDate}
+                            onInput={(e) => { if (parseIsoDate(targetOf(e).value)) setStudyDate(targetOf(e).value); }} />
+                        {STUDY_DATES.map(([label, monthDay]) => (
+                            <button class="button-ghost" onClick={() => setStudyDate(`${studyDate.slice(0, 4)}-${monthDay}`)}>{label}</button>
+                        ))}
+                    </div>
+                    <div class="row row--wrap">
+                        <label class="muted" for="re-sfrom">From</label>
+                        <input id="re-sfrom" type="time" step="300" value={formatClock(studyFrom)}
+                            onInput={(e) => {
+                                const [h, m] = targetOf(e).value.split(':').map(Number);
+                                if (Number.isFinite(h) && Number.isFinite(m)) setStudyFrom(h * 60 + m);
+                            }} />
+                        <label class="muted" for="re-sto">to</label>
+                        <input id="re-sto" type="time" step="300" value={formatClock(studyTo)}
+                            onInput={(e) => {
+                                const [h, m] = targetOf(e).value.split(':').map(Number);
+                                if (Number.isFinite(h) && Number.isFinite(m)) setStudyTo(h * 60 + m);
+                            }} />
+                    </div>
+                    <div class="row row--wrap">
+                        <label class="muted" for="re-scount">Images</label>
+                        <select id="re-scount" value={studyCount}
+                            onChange={(e) => setStudyCount(Number((e.target as unknown as HTMLSelectElement).value))}>
+                            {[2, 3, 4, 5, 6, 8, 9, 12].map((n) => <option value={n}>{n}</option>)}
+                        </select>
+                        <label class="muted" for="re-scols">Columns</label>
+                        <select id="re-scols" value={studyColumns}
+                            onChange={(e) => setStudyColumns(Number((e.target as unknown as HTMLSelectElement).value))}>
+                            {[1, 2, 3, 4].map((n) => <option value={n}>{n}</option>)}
+                        </select>
+                        <label class="muted">
+                            <input type="checkbox" checked={studyLabels} onChange={(e) => setStudyLabels(targetOf(e).checked)} /> Labels
+                        </label>
+                    </div>
+                    <div class="row row--wrap">
+                        <button onClick={createStudy} disabled={busy || !formaSun.current?.location}>Create shadow study</button>
+                        {study && (
+                            <button class="button-ghost" onClick={() => {
+                                const link = document.createElement('a');
+                                link.href = study.url;
+                                link.download = study.name;
+                                link.click();
+                            }}>Download PNG</button>
+                        )}
+                    </div>
+                    <p class="muted">
+                        {style.shadows
+                            ? `${studyCount} renders from ${formatClock(studyFrom)} to ${formatClock(studyTo)} on one sheet, ${exportWidth}px wide, using the current view, look and project time zone.`
+                            : 'Switch Shadows on first, otherwise the images will not show any.'}
+                    </p>
+                    {study && <img src={study.url} alt="Shadow study" style={{ width: '100%', display: 'block', border: '1px solid var(--border-default)' }} />}
 
                     <h3>Compare with Forma</h3>
                     <div class="row row--wrap">

@@ -447,6 +447,41 @@ export class PanelRenderer {
         }
     }
 
+    /**
+     * Renders `steps` frames at `width` pixels wide, calling `prepare(i)` before each one (to change the
+     * sun, say), and returns a copy of each frame. The screen size is restored at the end.
+     */
+    captureSequence(width: number, steps: number, prepare: (index: number) => void): HTMLCanvasElement[] {
+        const aspect = this.width / this.height;
+        const prevWidth = this.width, prevHeight = this.height, prevRatio = this.renderer.getPixelRatio();
+        const frameHeight = Math.round(width / aspect);
+        this.renderer.setPixelRatio(1);
+        this.renderer.setSize(width, frameHeight, false);
+        this.width = width;
+        this.height = frameHeight;
+        const frames: HTMLCanvasElement[] = [];
+        try {
+            for (let i = 0; i < steps; i++) {
+                prepare(i);
+                this.render();
+                const copy = document.createElement('canvas');
+                copy.width = width;
+                copy.height = frameHeight;
+                copy.getContext('2d')!.drawImage(this.renderer.domElement, 0, 0);
+                frames.push(copy);
+            }
+        } finally {
+            this.resize(prevWidth, prevHeight, prevRatio);
+            this.render();
+        }
+        return frames;
+    }
+
+    /** Width and height of the on-screen view, for planning export layouts. */
+    get aspect(): number {
+        return this.width / this.height;
+    }
+
     gpuInfo(): string {
         const gl = this.renderer.getContext();
         const ext = gl.getExtension('WEBGL_debug_renderer_info');
