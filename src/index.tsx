@@ -7,7 +7,7 @@ import {
     loadAssignments, loadCategories, newId, paletteColor, saveAssignments, saveCategories,
 } from "./categories";
 import { buildEnvelope, encodeGlb, translationMatrix } from "./envelope";
-import { RenderEngine } from "./RenderEngine";
+import { RenderEngine } from "./render/RenderEngine";
 import { Field, Legend, Spinner, TabPanel, Tabs, preference } from "./ui";
 import {
     ImportPlan, buildExportRows, categoryValueName, decodeText, parseTable, planImport, toCsv, toTsv,
