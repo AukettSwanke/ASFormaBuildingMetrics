@@ -136,6 +136,8 @@ export class PanelRenderer {
     private style: RenderStyle = PRESETS['Clay'];
     private panelColours = new Map<string, string>();
     private sunDir = new Vector3(0.4, -0.6, 0.7).normalize();
+    /** 0 with the sun below the horizon, rising to 1 by a few degrees of elevation. */
+    private sunFade = 1;
     private width = 1;
     private height = 1;
     /** On-screen width in CSS pixels; line weights are defined against this, so exports scale up with the image. */
@@ -270,8 +272,7 @@ export class PanelRenderer {
         this.panelColours = panelColours;
         this.renderer.setClearColor(new Color(style.background), style.transparent ? 0 : 1);
         this.ambientLight.intensity = style.ambient * LIGHT_SCALE;
-        this.sunLight.intensity = style.sunIntensity * LIGHT_SCALE;
-        this.sunLight.castShadow = style.shadows;
+        this.updateSunLight();
         this.lineMaterial.color.set(style.lineColour);
         this.silhouetteMaterial.color.set(style.lineColour);
         if (this.silhouetteLines) this.silhouetteLines.visible = style.silhouettes;
@@ -291,7 +292,21 @@ export class PanelRenderer {
     /** `direction` points from the scene towards the sun. */
     setSunDirection(direction: [number, number, number]): void {
         this.sunDir.set(...direction).normalize();
+        // Direction z is the sine of the elevation: fade the sun out between 0 and 6 degrees.
+        const t = Math.max(0, Math.min(1, this.sunDir.z / Math.sin((6 * Math.PI) / 180)));
+        this.sunFade = t * t * (3 - 2 * t);
+        this.updateSunLight();
         this.updateSunShadow();
+    }
+
+    private updateSunLight(): void {
+        this.sunLight.intensity = this.style.sunIntensity * this.sunFade * LIGHT_SCALE;
+        this.sunLight.castShadow = this.style.shadows && this.sunFade > 0;
+    }
+
+    /** Sun elevation in degrees implied by the current direction. */
+    get sunElevation(): number {
+        return (Math.asin(Math.max(-1, Math.min(1, this.sunDir.z))) * 180) / Math.PI;
     }
 
     private updateSunShadow(): void {

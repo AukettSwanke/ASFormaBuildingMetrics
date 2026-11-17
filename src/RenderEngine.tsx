@@ -2,6 +2,11 @@ import { Forma } from 'forma-embedded-view-sdk/auto';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ContextMode, PanelRenderer, RenderStyle } from './panelRender';
 import { sunAngles, sunVector } from './sunPosition';
+import { fallbackZone, formatClock, isoDate, parseIsoDate, utcToZoned, zonedToUtc } from './timeZone';
+
+type SunMode = 'forma' | 'custom';
+/** Standard planning dates for shadow studies (equinoxes and solstices, rounded to the 21st). */
+const STUDY_DATES: [string, string][] = [['21 Mar', '03-21'], ['21 Jun', '06-21'], ['21 Sep', '09-21'], ['21 Dec', '12-21']];
 
 /** Forma's camera field of view; confirmed by overlaying Forma's own capture. */
 const FOV = 45;
@@ -29,7 +34,8 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
     const engine = useRef<PanelRenderer | null>(null);
     const presetsRef = useRef<Presets | null>(null);
     const unsubscribe = useRef<(() => void) | null>(null);
-    const sunBase = useRef<ReturnType<typeof sunAngles> | null>(null);
+    /** What Forma last reported about the sun and the project, read by readSun. */
+    const formaSun = useRef<{ date: Date; location: [number, number] | null; zone: string } | null>(null);
 
     const [loaded, setLoaded] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -43,6 +49,11 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
     const [overlayOpacity, setOverlayOpacity] = useState(0.5);
     const [exportWidth, setExportWidth] = useState(2560);
     const [sunText, setSunText] = useState<string | null>(null);
+    const [sunMode, setSunMode] = useState<SunMode>('forma');
+    const [customDate, setCustomDate] = useState('2026-06-21');
+    const [customMinutes, setCustomMinutes] = useState(12 * 60);
+    /** Bumped whenever Forma's sun is re-read, so the sun effect runs again. */
+    const [sunTick, setSunTick] = useState(0);
 
     const lastCamera = useRef<Parameters<PanelRenderer['setView']>[0] | null>(null);
 
@@ -59,7 +70,6 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
         if (!e || !loaded || !style) return;
         e.applyStyle(style, panelColours);
         e.setView(lastCamera.current!, FOV);
-        if (sunBase.current) e.setSunDirection(sunVector(sunBase.current));
         redraw();
     }, [style, panelColours, aspect, loaded]);
 
@@ -78,12 +88,67 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
     }, []);
 
     const readSun = async () => {
-        const [date, location] = await Promise.all([Forma.sun.getDate(), Forma.project.getGeoLocation()]);
-        if (!location) { setSunText('No project location, so the sun direction is a default.'); return; }
-        const angles = sunAngles(date, location[0], location[1]);
-        sunBase.current = angles;
-        setSunText(`Sun ${date.toISOString().slice(0, 16)}Z · azimuth ${angles.azimuth.toFixed(1)}° · elevation ${angles.elevation.toFixed(1)}°`);
-        engine.current?.setSunDirection(sunVector(angles));
+        const [date, location, timezone] = await Promise.all([
+            Forma.sun.getDate(), Forma.project.getGeoLocation(), Forma.project.getTimezone(),
+        ]);
+        formaSun.current = {
+            date,
+            location: location ?? null,
+            zone: timezone ?? (location ? fallbackZone(location[1]) : 'UTC'),
+        };
+        setSunTick((n) => n + 1);
+    };
+
+    /** The instant the panel should light the scene for, in the chosen mode. */
+    const sunInstant = (): Date | null => {
+        const info = formaSun.current;
+        if (!info) return null;
+        if (sunMode === 'forma') return info.date;
+        const day = parseIsoDate(customDate);
+        if (!day) return null;
+        return zonedToUtc({ ...day, hour: Math.floor(customMinutes / 60), minute: customMinutes % 60 }, info.zone);
+    };
+
+    // Light the scene for the chosen moment whenever the mode, date, time or Forma's sun changes.
+    useEffect(() => {
+        const e = engine.current, info = formaSun.current;
+        if (!e || !loaded || !info) return;
+        if (!info.location) { setSunText('The project has no location, so the sun direction is a default.'); return; }
+        const date = sunInstant();
+        if (!date) return;
+        const angles = sunAngles(date, info.location[0], info.location[1]);
+        e.setSunDirection(sunVector(angles));
+        const z = utcToZoned(date, info.zone);
+        setSunText(
+            `${isoDate(z)} ${formatClock(z.hour * 60 + z.minute)} (${info.zone}) · azimuth ${angles.azimuth.toFixed(0)}° · `
+            + (angles.elevation > 0 ? `elevation ${angles.elevation.toFixed(1)}°` : 'sun below the horizon'),
+        );
+        redraw();
+    }, [loaded, sunMode, customDate, customMinutes, sunTick]);
+
+    const chooseSunMode = (mode: SunMode) => {
+        if (mode === 'custom' && formaSun.current) {
+            // Start from where Forma's sun is now, so the slider begins at the current view.
+            const z = utcToZoned(formaSun.current.date, formaSun.current.zone);
+            setCustomDate(isoDate(z));
+            setCustomMinutes(Math.min(1430, Math.round((z.hour * 60 + z.minute) / 10) * 10));
+        }
+        setSunMode(mode);
+    };
+
+    const chooseStudyDate = (monthDay: string) => setCustomDate(`${customDate.slice(0, 4)}-${monthDay}`);
+
+    /** Moves Forma's own sun to the chosen moment, so the Forma view matches the panel. */
+    const applyToForma = async () => {
+        const date = sunInstant();
+        if (!date) return;
+        try {
+            await Forma.sun.setDate({ date });
+            await readSun();
+        } catch (error) {
+            console.error(error);
+            setStatus(`Could not set Forma's sun: ${error instanceof Error ? error.message : String(error)}`);
+        }
     };
 
     const load = async () => {
@@ -301,10 +366,40 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         </div>
                     )}
 
+                    <h3>Sun</h3>
+                    <div class="row row--wrap">
+                        <select value={sunMode} aria-label="Sun source"
+                            onChange={(e) => chooseSunMode((e.target as unknown as HTMLSelectElement).value as SunMode)}>
+                            <option value="forma">Follow Forma</option>
+                            <option value="custom">Choose date and time</option>
+                        </select>
+                        <button class="button-ghost" onClick={() => readSun()} disabled={busy}>Re-read sun</button>
+                    </div>
+                    {sunMode === 'custom' && (
+                        <>
+                            <div class="row row--wrap">
+                                <label class="muted" for="re-date">Date</label>
+                                <input id="re-date" type="date" value={customDate}
+                                    onInput={(e) => { if (parseIsoDate(targetOf(e).value)) setCustomDate(targetOf(e).value); }} />
+                                {STUDY_DATES.map(([label, monthDay]) => (
+                                    <button class="button-ghost" onClick={() => chooseStudyDate(monthDay)}>{label}</button>
+                                ))}
+                            </div>
+                            <div class="row row--wrap">
+                                <label class="muted" for="re-time">Time {formatClock(customMinutes)}</label>
+                                <input id="re-time" type="range" min="0" max="1430" step="10" value={customMinutes}
+                                    onInput={(e) => setCustomMinutes(Number(targetOf(e).value))} />
+                            </div>
+                            <div class="row row--wrap">
+                                <button class="button-ghost" onClick={applyToForma} disabled={busy}>Set Forma's sun to this</button>
+                            </div>
+                        </>
+                    )}
+                    <p class="muted">{sunText}</p>
+
                     <h3>Compare with Forma</h3>
                     <div class="row row--wrap">
                         <button class="button-ghost" onClick={grabOverlay} disabled={busy}>Overlay Forma view</button>
-                        <button class="button-ghost" onClick={() => readSun().then(redraw)} disabled={busy}>Re-read sun</button>
                         {overlay && (
                             <>
                                 <input type="range" min="0" max="1" step="0.05" value={overlayOpacity}
@@ -320,7 +415,6 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         </select>
                         <button onClick={download} disabled={busy}>Download PNG</button>
                     </div>
-                    <p class="muted">{sunText}</p>
                     <p class="muted">{info}</p>
                 </>
             )}
