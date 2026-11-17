@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { PanelRenderer, RenderStyle } from './panelRender';
 import { sunAngles, sunVector } from './sunPosition';
 
+/** Forma's camera field of view; confirmed by overlaying Forma's own capture. */
+const FOV = 45;
+
 const ASPECTS: Record<string, number> = { '16:9': 16 / 9, '4:3': 4 / 3, '1:1': 1 };
 type Presets = Record<string, RenderStyle>;
 
@@ -31,19 +34,14 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
     const [status, setStatus] = useState<string | null>(null);
     const [info, setInfo] = useState<string | null>(null);
     const [aspect, setAspect] = useState('16:9');
-    const [fov, setFov] = useState(45);
     const [presetName, setPresetName] = useState('Clay');
     const [style, setStyle] = useState<RenderStyle | null>(null);
-    const [sunRotation, setSunRotation] = useState(0);
     const [overlay, setOverlay] = useState<string | null>(null);
     const [overlayOpacity, setOverlayOpacity] = useState(0.5);
     const [exportWidth, setExportWidth] = useState(2560);
     const [sunText, setSunText] = useState<string | null>(null);
 
     const lastCamera = useRef<Parameters<PanelRenderer['setView']>[0] | null>(null);
-    // The camera subscription outlives renders, so it reads the FOV through a ref.
-    const fovRef = useRef(fov);
-    fovRef.current = fov;
 
     const redraw = () => {
         const e = engine.current, el = host.current;
@@ -57,10 +55,10 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
         const e = engine.current;
         if (!e || !loaded || !style) return;
         e.applyStyle(style, panelColours);
-        e.setView(lastCamera.current!, fov);
-        if (sunBase.current) e.setSunDirection(sunVector(sunBase.current, sunRotation));
+        e.setView(lastCamera.current!, FOV);
+        if (sunBase.current) e.setSunDirection(sunVector(sunBase.current));
         redraw();
-    }, [style, panelColours, fov, aspect, sunRotation, loaded]);
+    }, [style, panelColours, aspect, loaded]);
 
     useEffect(() => {
         const el = host.current;
@@ -82,7 +80,7 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
         const angles = sunAngles(date, location[0], location[1]);
         sunBase.current = angles;
         setSunText(`Sun ${date.toISOString().slice(0, 16)}Z · azimuth ${angles.azimuth.toFixed(1)}° · elevation ${angles.elevation.toFixed(1)}°`);
-        engine.current?.setSunDirection(sunVector(angles, sunRotation));
+        engine.current?.setSunDirection(sunVector(angles));
     };
 
     const load = async () => {
@@ -117,7 +115,7 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
             unsubscribe.current?.();
             const sub = await Forma.camera.subscribe((state) => {
                 lastCamera.current = state;
-                engine.current?.setView(state, fovRef.current);
+                engine.current?.setView(state, FOV);
                 engine.current?.render();
             });
             unsubscribe.current = sub.unsubscribe;
@@ -215,9 +213,34 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         ))}
                     </div>
                     <div class="row row--wrap">
-                        <label class="muted" for="re-weight">Line weight {style.lineWeight}px</label>
-                        <input id="re-weight" type="range" min="0.5" max="8" step="0.5" value={style.lineWeight}
+                        <label class="muted" for="re-weight">Edge lines (px)</label>
+                        <input id="re-weight" type="range" min="0.05" max="8" step="0.05" value={style.lineWeight}
                             onInput={(e) => patch({ lineWeight: Number(targetOf(e).value) })} />
+                        <input type="number" min="0.01" max="20" step="0.05" value={style.lineWeight} style={{ width: '6em' }}
+                            onInput={(e) => {
+                                const v = Number(targetOf(e).value);
+                                if (v > 0) patch({ lineWeight: Math.min(v, 20) });
+                            }} />
+                    </div>
+                    <div class="row row--wrap">
+                        <label class="muted">
+                            <input type="checkbox" checked={style.silhouettes}
+                                onChange={(e) => patch({ silhouettes: targetOf(e).checked })} /> Silhouettes
+                        </label>
+                        <input type="range" min="0.05" max="8" step="0.05" value={style.silhouetteWeight}
+                            disabled={!style.silhouettes} aria-label="Silhouette weight"
+                            onInput={(e) => patch({ silhouetteWeight: Number(targetOf(e).value) })} />
+                        <input type="number" min="0.01" max="20" step="0.05" value={style.silhouetteWeight} style={{ width: '6em' }}
+                            disabled={!style.silhouettes} aria-label="Silhouette weight in pixels"
+                            onInput={(e) => {
+                                const v = Number(targetOf(e).value);
+                                if (v > 0) patch({ silhouetteWeight: Math.min(v, 20) });
+                            }} />
+                    </div>
+                    <div class="row row--wrap">
+                        <label class="muted" for="re-depth">Depth weighting {Math.round(style.depthWeight * 100)}%</label>
+                        <input id="re-depth" type="range" min="0" max="1" step="0.05" value={style.depthWeight}
+                            onInput={(e) => patch({ depthWeight: Number(targetOf(e).value) })} />
                     </div>
                     <div class="row row--wrap">
                         <label class="muted" for="re-line">Line</label>
@@ -245,19 +268,10 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         </select>
                     </div>
 
-                    <h3>Match to Forma</h3>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-fov">Field of view {fov}°</label>
-                        <input id="re-fov" type="range" min="15" max="90" value={fov} onInput={(e) => setFov(Number(targetOf(e).value))} />
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-rot">Sun rotation {sunRotation}°</label>
-                        <input id="re-rot" type="range" min="-180" max="180" value={sunRotation}
-                            onInput={(e) => setSunRotation(Number(targetOf(e).value))} />
-                        <button class="button-ghost" onClick={() => readSun().then(redraw)} disabled={busy}>Re-read sun</button>
-                    </div>
+                    <h3>Compare with Forma</h3>
                     <div class="row row--wrap">
                         <button class="button-ghost" onClick={grabOverlay} disabled={busy}>Overlay Forma view</button>
+                        <button class="button-ghost" onClick={() => readSun().then(redraw)} disabled={busy}>Re-read sun</button>
                         {overlay && (
                             <>
                                 <input type="range" min="0" max="1" step="0.05" value={overlayOpacity}

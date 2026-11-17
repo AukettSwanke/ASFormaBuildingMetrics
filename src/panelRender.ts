@@ -4,13 +4,39 @@
 // Forma world space is metres, Z up, so the camera simply uses Z as "up".
 
 import {
-    AmbientLight, Box3, BufferAttribute, BufferGeometry, Color, DirectionalLight, EdgesGeometry,
+    AmbientLight, Box3, BufferAttribute, BufferGeometry, Color, DirectionalLight,
     Mesh, MeshLambertMaterial, OrthographicCamera, PCFShadowMap, PerspectiveCamera, Scene,
-    Sphere, Vector3, WebGLRenderer,
+    Sphere, Vector3, Vector4, WebGLRenderer,
 } from 'three';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { EdgeSet, buildEdgeSet, findSilhouettes } from './silhouette';
+
+/**
+ * Screen-space line material whose width varies with distance from the camera. The width is
+ * multiplied per segment end, so long edges taper smoothly towards the distant end.
+ * `depthRange` = (near distance, far distance, scale at near, scale at far).
+ */
+class DepthLineMaterial extends LineMaterial {
+    readonly depthRange = new Vector4(0, 1, 1, 1);
+
+    constructor(parameters: ConstructorParameters<typeof LineMaterial>[0]) {
+        super(parameters);
+        this.uniforms.depthRange = { value: this.depthRange };
+        const patched = this.vertexShader
+            .replace('uniform float linewidth;', 'uniform float linewidth;\n\t\tuniform vec4 depthRange;')
+            .replace('offset *= linewidth;', `vec4 depthPoint = ( position.y < 0.5 ) ? start : end;
+\t\t\t\tfloat depthT = clamp( ( - depthPoint.z - depthRange.x ) / max( depthRange.y - depthRange.x, 0.001 ), 0.0, 1.0 );
+\t\t\t\toffset *= linewidth * mix( depthRange.z, depthRange.w, depthT );`);
+        if (patched === this.vertexShader || !patched.includes('depthRange')) {
+            console.warn('Depth-weighted lines: three.js line shader changed, depth weighting is disabled.');
+        } else {
+            this.vertexShader = patched;
+        }
+        this.needsUpdate = true;
+    }
+}
 
 export interface RenderStyle {
     background: string;
@@ -18,8 +44,14 @@ export interface RenderStyle {
     buildingColour: string | null;
     contextColour: string;
     lineColour: string;
-    /** Line width in pixels at the on-screen size; scaled up automatically for exports. */
+    /** Crease line width in pixels at the on-screen size; scaled up automatically for exports. */
     lineWeight: number;
+    /** Outline of curved and overlapping forms, found for the current view. */
+    silhouettes: boolean;
+    /** Silhouette line width in pixels. */
+    silhouetteWeight: number;
+    /** 0 = uniform lines, 1 = strong contrast between near (heavy) and far (light) lines. */
+    depthWeight: number;
     /** 0–1 */
     ambient: number;
     /** 0–1 */
@@ -30,19 +62,23 @@ export interface RenderStyle {
 export const PRESETS: Record<string, RenderStyle> = {
     'Line drawing': {
         background: '#ffffff', buildingColour: '#ffffff', contextColour: '#ffffff', lineColour: '#111111',
-        lineWeight: 2, ambient: 1, sunIntensity: 0, shadows: false,
+        lineWeight: 1, silhouettes: true, silhouetteWeight: 2.5, depthWeight: 0.5,
+        ambient: 1, sunIntensity: 0, shadows: false,
     },
     'Clay': {
         background: '#e9e6df', buildingColour: '#f4f1ea', contextColour: '#d9d5cc', lineColour: '#3a3a3a',
-        lineWeight: 1.5, ambient: 0.45, sunIntensity: 0.9, shadows: true,
+        lineWeight: 1, silhouettes: true, silhouetteWeight: 2, depthWeight: 0.4,
+        ambient: 0.45, sunIntensity: 0.9, shadows: true,
     },
     'Panel colours': {
         background: '#f5f5f5', buildingColour: null, contextColour: '#e0e0e0', lineColour: '#222222',
-        lineWeight: 1.5, ambient: 0.6, sunIntensity: 0.7, shadows: true,
+        lineWeight: 1, silhouettes: true, silhouetteWeight: 2, depthWeight: 0.4,
+        ambient: 0.6, sunIntensity: 0.7, shadows: true,
     },
     'Night': {
         background: '#0b1220', buildingColour: '#1c2a44', contextColour: '#121a2b', lineColour: '#8fb4ff',
-        lineWeight: 1.5, ambient: 0.25, sunIntensity: 0.35, shadows: true,
+        lineWeight: 1, silhouettes: true, silhouetteWeight: 1.8, depthWeight: 0.3,
+        ambient: 0.25, sunIntensity: 0.35, shadows: true,
     },
 };
 
@@ -69,7 +105,13 @@ export class PanelRenderer {
     private ortho = new OrthographicCamera(-1, 1, 1, -1, 1, 10000);
     private ambientLight = new AmbientLight(0xffffff, 1);
     private sunLight = new DirectionalLight(0xffffff, 1);
-    private lineMaterial = new LineMaterial({ color: 0x111111, linewidth: 2 });
+    private lineMaterial = new DepthLineMaterial({ color: 0x111111, linewidth: 2, alphaToCoverage: true });
+    private silhouetteMaterial = new DepthLineMaterial({ color: 0x111111, linewidth: 2, alphaToCoverage: true });
+    private silhouetteLines: LineSegments2 | null = null;
+    private edgeSets: EdgeSet[] = [];
+    /** Camera pose the silhouettes were last computed for. */
+    private silhouetteKey = '';
+    private buildingSphere = new Sphere();
     private buildingMeshes = new Map<string, Mesh>();
     private contextMesh: Mesh | null = null;
     private lines: LineSegments2 | null = null;
@@ -85,7 +127,7 @@ export class PanelRenderer {
     /** On-screen width in CSS pixels; line weights are defined against this, so exports scale up with the image. */
     private screenWidth = 1;
 
-    stats = { buildingTriangles: 0, contextTriangles: 0, edgeSegments: 0 };
+    stats = { buildingTriangles: 0, contextTriangles: 0, edgeSegments: 0, smoothEdges: 0, silhouetteSegments: 0 };
 
     constructor(canvas: HTMLCanvasElement) {
         this.renderer = new WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
@@ -122,6 +164,13 @@ export class PanelRenderer {
         this.buildingMeshes.clear();
         if (this.lines) { this.scene.remove(this.lines); this.lines.geometry.dispose(); this.lines = null; }
 
+        this.edgeSets = [];
+        this.silhouetteKey = '';
+        if (this.silhouetteLines) {
+            this.scene.remove(this.silhouetteLines);
+            this.silhouetteLines.geometry.dispose();
+            this.silhouetteLines = null;
+        }
         const edgeChunks: Float32Array[] = [];
         let edgeLength = 0, triangles = 0;
         for (const { path, position } of buildings) {
@@ -130,11 +179,10 @@ export class PanelRenderer {
             this.scene.add(mesh);
             this.buildingMeshes.set(path, mesh);
             triangles += position.length / 9;
-            const edges = new EdgesGeometry(mesh.geometry, EDGE_ANGLE);
-            const edgePositions = edges.getAttribute('position').array as Float32Array;
-            edgeChunks.push(edgePositions);
-            edgeLength += edgePositions.length;
-            edges.dispose();
+            const set = buildEdgeSet(position, EDGE_ANGLE);
+            this.edgeSets.push(set);
+            edgeChunks.push(set.hard);
+            edgeLength += set.hard.length;
         }
         if (edgeLength > 0) {
             const all = new Float32Array(edgeLength);
@@ -148,6 +196,7 @@ export class PanelRenderer {
         }
         this.stats.buildingTriangles = triangles;
         this.stats.edgeSegments = edgeLength / 6;
+        this.stats.smoothEdges = this.edgeSets.reduce((n, e) => n + e.smooth.length / 6, 0);
         this.refreshBounds();
         this.applyStyle(this.style, this.panelColours);
     }
@@ -184,6 +233,7 @@ export class PanelRenderer {
         }
         if (this.bounds.isEmpty()) this.bounds.set(new Vector3(-50, -50, 0), new Vector3(50, 50, 50));
         this.bounds.getBoundingSphere(this.sphere);
+        this.buildingSphere.copy(this.sphere);
         if (this.contextMesh) {
             this.contextMesh.geometry.computeBoundingSphere();
             const cs = this.contextMesh.geometry.boundingSphere!;
@@ -202,6 +252,8 @@ export class PanelRenderer {
         this.sunLight.intensity = style.sunIntensity * LIGHT_SCALE;
         this.sunLight.castShadow = style.shadows;
         this.lineMaterial.color.set(style.lineColour);
+        this.silhouetteMaterial.color.set(style.lineColour);
+        if (this.silhouetteLines) this.silhouetteLines.visible = style.silhouettes;
         for (const [path, mesh] of this.buildingMeshes) {
             (mesh.material as MeshLambertMaterial).color.set(
                 style.buildingColour ?? panelColours.get(path) ?? '#cccccc',
@@ -270,13 +322,68 @@ export class PanelRenderer {
         return this.perspective;
     }
 
+    /** Recomputes silhouette segments when the view has changed since the last time. */
+    private updateSilhouettes(camera: PerspectiveCamera | OrthographicCamera): void {
+        if (!this.style.silhouettes || this.edgeSets.every((e) => e.smooth.length === 0)) {
+            if (this.silhouetteLines) this.silhouetteLines.visible = false;
+            this.stats.silhouetteSegments = 0;
+            return;
+        }
+        const p = camera.position;
+        const key = `${camera instanceof PerspectiveCamera ? 'p' : 'o'}${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)}`
+            + `|${this.cameraState?.target.x},${this.cameraState?.target.y},${this.cameraState?.target.z}`;
+        if (key === this.silhouetteKey && this.silhouetteLines) {
+            this.silhouetteLines.visible = true;
+            return;
+        }
+        this.silhouetteKey = key;
+        const look = new Vector3();
+        camera.getWorldDirection(look);
+        const view = camera instanceof PerspectiveCamera
+            ? { kind: 'perspective' as const, x: p.x, y: p.y, z: p.z }
+            : { kind: 'orthographic' as const, x: look.x, y: look.y, z: look.z };
+        const chunks = this.edgeSets.map((set) => findSilhouettes(set, view));
+        const total = chunks.reduce((n, c) => n + c.length, 0);
+        this.stats.silhouetteSegments = total / 6;
+        if (total === 0) {
+            if (this.silhouetteLines) this.silhouetteLines.visible = false;
+            return;
+        }
+        const all = new Float32Array(total);
+        let offset = 0;
+        for (const chunk of chunks) { all.set(chunk, offset); offset += chunk.length; }
+        if (!this.silhouetteLines) {
+            this.silhouetteLines = new LineSegments2(new LineSegmentsGeometry(), this.silhouetteMaterial);
+            this.silhouetteLines.frustumCulled = false;
+            this.scene.add(this.silhouetteLines);
+        } else {
+            this.silhouetteLines.geometry.dispose(); // frees the previous GPU buffers
+        }
+        this.silhouetteLines.geometry.setPositions(all);
+        this.silhouetteLines.visible = true;
+    }
+
     render(): void {
         const camera = this.activeCamera(this.width / this.height);
         const ratio = this.renderer.getPixelRatio();
-        this.lineMaterial.resolution.set(this.width * ratio, this.height * ratio);
-        // Line width is in device pixels: weight is CSS px on screen, scaled up in proportion for exports.
-        this.lineMaterial.linewidth = this.style.lineWeight * (this.width * ratio) / this.screenWidth;
+        const resolution = new Vector3(this.width * ratio, this.height * ratio, 0);
+        this.lineMaterial.resolution.set(resolution.x, resolution.y);
+        this.silhouetteMaterial.resolution.set(resolution.x, resolution.y);
+        // Line widths are in device pixels: weights are CSS px on screen, scaled up in proportion for exports.
+        const scale = resolution.x / this.screenWidth;
+        this.lineMaterial.linewidth = this.style.lineWeight * scale;
+        this.silhouetteMaterial.linewidth = this.style.silhouetteWeight * scale;
         if (!camera) { this.renderer.clear(); return; }
+
+        // Depth weighting: heavy near the camera, light far away, equal at the middle of the buildings.
+        const distance = camera.position.distanceTo(this.buildingSphere.center);
+        const near = Math.max(0.1, distance - this.buildingSphere.radius);
+        const far = Math.max(near + 1, distance + this.buildingSphere.radius);
+        const a = this.style.depthWeight;
+        this.lineMaterial.depthRange.set(near, far, 1 + a, Math.max(0.1, 1 - a));
+        this.silhouetteMaterial.depthRange.copy(this.lineMaterial.depthRange);
+
+        this.updateSilhouettes(camera);
         this.renderer.render(this.scene, camera);
     }
 
@@ -310,6 +417,8 @@ export class PanelRenderer {
         if (this.contextMesh) this.disposeMesh(this.contextMesh);
         this.lines?.geometry.dispose();
         this.lineMaterial.dispose();
+        this.silhouetteMaterial.dispose();
+        this.silhouetteLines?.geometry.dispose();
         this.renderer.dispose();
     }
 }
