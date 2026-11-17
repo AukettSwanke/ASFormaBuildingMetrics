@@ -6,7 +6,7 @@
 import {
     AmbientLight, Box3, BufferAttribute, BufferGeometry, Color, DirectionalLight,
     Mesh, MeshLambertMaterial, OrthographicCamera, PCFShadowMap, PerspectiveCamera, Scene,
-    Sphere, Vector3, Vector4, WebGLRenderer,
+    ShadowMaterial, Sphere, Vector3, Vector4, WebGLRenderer,
 } from 'three';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -38,8 +38,17 @@ class DepthLineMaterial extends LineMaterial {
     }
 }
 
+/** How everything that is not a building (terrain, trees, other elements) is drawn. */
+export type ContextMode = 'shown' | 'shadows' | 'hidden';
+
 export interface RenderStyle {
     background: string;
+    /** Leave the background transparent (PNG alpha). The colour above is then ignored. */
+    transparent: boolean;
+    /** `shadows` draws only the shadows falling on the context, so the ground stays see-through. */
+    contextMode: ContextMode;
+    /** Darkness of context shadows, 0–1, used by `shadows` mode. */
+    shadowOpacity: number;
     /** Flat colour for all buildings, or null to use the colours currently applied in the panel. */
     buildingColour: string | null;
     contextColour: string;
@@ -61,22 +70,22 @@ export interface RenderStyle {
 
 export const PRESETS: Record<string, RenderStyle> = {
     'Line drawing': {
-        background: '#ffffff', buildingColour: '#ffffff', contextColour: '#ffffff', lineColour: '#111111',
+        background: '#ffffff', transparent: false, contextMode: 'shown', shadowOpacity: 0.35, buildingColour: '#ffffff', contextColour: '#ffffff', lineColour: '#111111',
         lineWeight: 1, silhouettes: true, silhouetteWeight: 2.5, depthWeight: 0.5,
         ambient: 1, sunIntensity: 0, shadows: false,
     },
     'Clay': {
-        background: '#e9e6df', buildingColour: '#f4f1ea', contextColour: '#d9d5cc', lineColour: '#3a3a3a',
+        background: '#e9e6df', transparent: false, contextMode: 'shown', shadowOpacity: 0.35, buildingColour: '#f4f1ea', contextColour: '#d9d5cc', lineColour: '#3a3a3a',
         lineWeight: 1, silhouettes: true, silhouetteWeight: 2, depthWeight: 0.4,
         ambient: 0.45, sunIntensity: 0.9, shadows: true,
     },
     'Panel colours': {
-        background: '#f5f5f5', buildingColour: null, contextColour: '#e0e0e0', lineColour: '#222222',
+        background: '#f5f5f5', transparent: false, contextMode: 'shown', shadowOpacity: 0.35, buildingColour: null, contextColour: '#e0e0e0', lineColour: '#222222',
         lineWeight: 1, silhouettes: true, silhouetteWeight: 2, depthWeight: 0.4,
         ambient: 0.6, sunIntensity: 0.7, shadows: true,
     },
     'Night': {
-        background: '#0b1220', buildingColour: '#1c2a44', contextColour: '#121a2b', lineColour: '#8fb4ff',
+        background: '#0b1220', transparent: false, contextMode: 'shown', shadowOpacity: 0.35, buildingColour: '#1c2a44', contextColour: '#121a2b', lineColour: '#8fb4ff',
         lineWeight: 1, silhouettes: true, silhouetteWeight: 1.8, depthWeight: 0.3,
         ambient: 0.25, sunIntensity: 0.35, shadows: true,
     },
@@ -114,6 +123,11 @@ export class PanelRenderer {
     private buildingSphere = new Sphere();
     private buildingMeshes = new Map<string, Mesh>();
     private contextMesh: Mesh | null = null;
+    /** The context uses one of these two materials depending on `contextMode`; both are owned here. */
+    private contextLambert: MeshLambertMaterial | null = null;
+    private shadowMaterial = new ShadowMaterial({
+        opacity: 0.35, transparent: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+    });
     private lines: LineSegments2 | null = null;
     private bounds = new Box3();
     private sphere = new Sphere();
@@ -130,7 +144,7 @@ export class PanelRenderer {
     stats = { buildingTriangles: 0, contextTriangles: 0, edgeSegments: 0, smoothEdges: 0, silhouetteSegments: 0 };
 
     constructor(canvas: HTMLCanvasElement) {
-        this.renderer = new WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+        this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = PCFShadowMap;
         this.perspective.up.set(0, 0, 1);
@@ -203,10 +217,17 @@ export class PanelRenderer {
 
     /** Everything that is not a building (terrain, trees, other elements). Pass null to remove. */
     setContext(position: Float32Array | null): void {
-        if (this.contextMesh) { this.disposeMesh(this.contextMesh); this.contextMesh = null; }
+        if (this.contextMesh) {
+            this.scene.remove(this.contextMesh);
+            this.contextMesh.geometry.dispose();
+            this.contextLambert?.dispose();
+            this.contextMesh = null;
+            this.contextLambert = null;
+        }
         this.stats.contextTriangles = 0;
         if (position && position.length > 0) {
             this.contextMesh = this.makeMesh(position, false);
+            this.contextLambert = this.contextMesh.material as MeshLambertMaterial;
             this.scene.add(this.contextMesh);
             this.stats.contextTriangles = position.length / 9;
         }
@@ -247,7 +268,7 @@ export class PanelRenderer {
     applyStyle(style: RenderStyle, panelColours: Map<string, string>): void {
         this.style = style;
         this.panelColours = panelColours;
-        this.renderer.setClearColor(new Color(style.background), 1);
+        this.renderer.setClearColor(new Color(style.background), style.transparent ? 0 : 1);
         this.ambientLight.intensity = style.ambient * LIGHT_SCALE;
         this.sunLight.intensity = style.sunIntensity * LIGHT_SCALE;
         this.sunLight.castShadow = style.shadows;
@@ -259,7 +280,12 @@ export class PanelRenderer {
                 style.buildingColour ?? panelColours.get(path) ?? '#cccccc',
             );
         }
-        if (this.contextMesh) (this.contextMesh.material as MeshLambertMaterial).color.set(style.contextColour);
+        if (this.contextMesh && this.contextLambert) {
+            this.contextLambert.color.set(style.contextColour);
+            this.shadowMaterial.opacity = style.shadowOpacity;
+            this.contextMesh.visible = style.contextMode !== 'hidden';
+            this.contextMesh.material = style.contextMode === 'shadows' ? this.shadowMaterial : this.contextLambert;
+        }
     }
 
     /** `direction` points from the scene towards the sun. */
@@ -414,7 +440,12 @@ export class PanelRenderer {
 
     dispose(): void {
         for (const mesh of this.buildingMeshes.values()) this.disposeMesh(mesh);
-        if (this.contextMesh) this.disposeMesh(this.contextMesh);
+        if (this.contextMesh) {
+            this.scene.remove(this.contextMesh);
+            this.contextMesh.geometry.dispose();
+            this.contextLambert?.dispose();
+        }
+        this.shadowMaterial.dispose();
         this.lines?.geometry.dispose();
         this.lineMaterial.dispose();
         this.silhouetteMaterial.dispose();

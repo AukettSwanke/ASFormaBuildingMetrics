@@ -1,6 +1,6 @@
 import { Forma } from 'forma-embedded-view-sdk/auto';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import type { PanelRenderer, RenderStyle } from './panelRender';
+import type { ContextMode, PanelRenderer, RenderStyle } from './panelRender';
 import { sunAngles, sunVector } from './sunPosition';
 
 /** Forma's camera field of view; confirmed by overlaying Forma's own capture. */
@@ -10,6 +10,9 @@ const ASPECTS: Record<string, number> = { '16:9': 16 / 9, '4:3': 4 / 3, '1:1': 1
 type Presets = Record<string, RenderStyle>;
 
 const targetOf = (e: Event) => e.target as HTMLInputElement;
+
+/** Checkerboard shown behind the canvas while the background is transparent. */
+const CHECKERBOARD = 'repeating-conic-gradient(#d8d8d8 0% 25%, #ffffff 0% 50%) 50% / 16px 16px';
 
 /**
  * Spike for option B: draw the Forma scene with our own three.js renderer in the panel.
@@ -170,7 +173,7 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'forma-panel-render.png';
+            a.download = style?.transparent ? 'forma-panel-render-transparent.png' : 'forma-panel-render.png';
             a.click();
             setTimeout(() => URL.revokeObjectURL(url), 1000);
         } catch (error) {
@@ -198,7 +201,10 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
             </p>
 
             <div ref={host} style={{ position: 'relative', width: '100%', display: loaded ? 'block' : 'none' }}>
-                <canvas ref={canvas} style={{ width: '100%', display: 'block', border: '1px solid var(--border-default)' }} />
+                <canvas ref={canvas} style={{
+                    width: '100%', display: 'block', border: '1px solid var(--border-default)',
+                    background: style?.transparent ? CHECKERBOARD : undefined,
+                }} />
                 {overlay && (
                     <img src={overlay} alt="Forma view for comparison"
                         style={{ position: 'absolute', inset: '0', width: '100%', height: '100%', opacity: overlayOpacity, pointerEvents: 'none' }} />
@@ -246,7 +252,8 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         <label class="muted" for="re-line">Line</label>
                         <input id="re-line" type="color" value={style.lineColour} onInput={(e) => patch({ lineColour: targetOf(e).value })} />
                         <label class="muted" for="re-bg">Background</label>
-                        <input id="re-bg" type="color" value={style.background} onInput={(e) => patch({ background: targetOf(e).value })} />
+                        <input id="re-bg" type="color" value={style.background} disabled={style.transparent}
+                            onInput={(e) => patch({ background: targetOf(e).value })} />
                         <label class="muted" for="re-fill">Buildings</label>
                         <input id="re-fill" type="color" value={style.buildingColour ?? '#cccccc'}
                             onInput={(e) => patch({ buildingColour: targetOf(e).value })} />
@@ -267,6 +274,32 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                             {Object.keys(ASPECTS).map((a) => <option value={a}>{a}</option>)}
                         </select>
                     </div>
+                    <div class="row row--wrap">
+                        <label class="muted">
+                            <input type="checkbox" checked={style.transparent}
+                                onChange={(e) => {
+                                    const on = targetOf(e).checked;
+                                    // A see-through export is rarely wanted with an opaque ground, so switch to shadows only.
+                                    patch(on && style.contextMode === 'shown'
+                                        ? { transparent: true, contextMode: 'shadows' } : { transparent: on });
+                                }} /> Transparent background
+                        </label>
+                        <label class="muted" for="re-context">Context</label>
+                        <select id="re-context" value={style.contextMode}
+                            onChange={(e) => patch({ contextMode: (e.target as unknown as HTMLSelectElement).value as ContextMode })}>
+                            <option value="shown">Shown</option>
+                            <option value="shadows">Shadows only</option>
+                            <option value="hidden">Hidden</option>
+                        </select>
+                    </div>
+                    {style.contextMode === 'shadows' && (
+                        <div class="row row--wrap">
+                            <label class="muted" for="re-shadow">Shadow strength {Math.round(style.shadowOpacity * 100)}%</label>
+                            <input id="re-shadow" type="range" min="0.05" max="1" step="0.05" value={style.shadowOpacity}
+                                onInput={(e) => patch({ shadowOpacity: Number(targetOf(e).value) })} />
+                            {!style.shadows && <span class="muted">Switch Shadows on to see them.</span>}
+                        </div>
+                    )}
 
                     <h3>Compare with Forma</h3>
                     <div class="row row--wrap">
