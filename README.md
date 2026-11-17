@@ -34,6 +34,7 @@ npm install
 npm run dev        # dev server at http://localhost:5173/
 npm run typecheck  # TypeScript check only
 npm run build      # type-check, then production build to dist/
+npm test           # test harness against a stub of Forma (see dev-tools/README.md)
 ```
 
 The app only works inside Forma: load `http://localhost:5173/` as an embedded view in Forma's extension settings. Opening it in a normal browser tab will fail because the `Forma.*` API calls have no host.
