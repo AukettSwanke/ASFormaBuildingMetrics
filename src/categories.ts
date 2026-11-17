@@ -64,7 +64,7 @@ export const getProposalId = async (): Promise<string> => {
     return id.replace(/[^a-zA-Z0-9_.-]/g, '_');
 };
 
-const readJson = async (key: string): Promise<unknown> => {
+export const readJson = async (key: string): Promise<unknown> => {
     const res = await Forma.extensions.storage.getTextObject({ key });
     return res ? JSON.parse(res.data) : undefined;
 };
@@ -72,7 +72,7 @@ const readJson = async (key: string): Promise<unknown> => {
 // Writes to the same key run one after another, so quick successive edits land in order.
 const pendingWrites = new Map<string, Promise<void>>();
 
-const writeJson = (key: string, value: unknown): Promise<void> => {
+export const writeJson = (key: string, value: unknown): Promise<void> => {
     const data = JSON.stringify(value);
     const previous = pendingWrites.get(key) ?? Promise.resolve();
     const write = previous.catch(() => undefined).then(() => Forma.extensions.storage.setObject({ key, data }));
