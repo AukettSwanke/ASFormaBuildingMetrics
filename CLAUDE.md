@@ -17,7 +17,7 @@ npm run dev             # Dev server at http://localhost:5173/
 npm run typecheck       # tsc --noEmit (app)
 npm run build           # Type-check, then production build → dist/
 npm run preview         # Preview production build at http://localhost:4173/
-npm test                # Test harness: pure, engine and component suites (needs Playwright, see below)
+npm test                # Test harness: pure, engine, component and panel suites (needs Playwright, see below)
 npm run typecheck:tests # Type-check the harness together with the app
 node dev-tools/run.mjs shots   # Full-panel screenshots (light and dark) into dev-tools/.out/shots/
 ```
