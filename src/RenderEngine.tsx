@@ -4,6 +4,12 @@ import type { ContextMode, PanelRenderer, RenderStyle } from './panelRender';
 import { sunAngles, sunVector } from './sunPosition';
 import { fallbackZone, formatClock, isoDate, parseIsoDate, utcToZoned, zonedToUtc } from './timeZone';
 import { composeSheet, planSheet, studyTimes } from './studySheet';
+import { newId } from './categories';
+import {
+    LookStyle, MAX_NAME_LENGTH, MAX_PRESETS, SavedPreset, cleanName, mergeImported, nameTaken, parsePresetFile,
+    serialisePresets, toLook, withLook,
+} from './presets';
+import { loadRenderPresets, saveRenderPresets } from './presetStorage';
 
 type SunMode = 'forma' | 'custom';
 /** Black or near-white text, whichever reads better on a sheet of the given background colour. */
@@ -31,8 +37,10 @@ const CHECKERBOARD = 'repeating-conic-gradient(#d8d8d8 0% 25%, #ffffff 0% 50%) 5
  * Spike for option B: draw the Forma scene with our own three.js renderer in the panel.
  * three.js is imported on first use so it does not weigh down the rest of the panel.
  */
-export function RenderEngine({ buildingPaths, panelColours, disabled }: {
+export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }: {
     buildingPaths: string[];
+    /** False for view-only users, who can apply saved presets but not change them. */
+    canEdit: boolean;
     /** Colour currently shown for each building by the panel's colour mode (memoised by the caller). */
     panelColours: Map<string, string>;
     disabled: boolean;
@@ -52,6 +60,13 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
     const [info, setInfo] = useState<string | null>(null);
     const [aspect, setAspect] = useState('16:9');
     const [presetName, setPresetName] = useState('Clay');
+
+    // Saved presets (stored in the Forma project, shared by everyone working on it).
+    const [saved, setSaved] = useState<SavedPreset[]>([]);
+    const [newPresetName, setNewPresetName] = useState('');
+    const [presetMessage, setPresetMessage] = useState<string | null>(null);
+    const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+    const presetFile = useRef<HTMLInputElement>(null);
     const [style, setStyle] = useState<RenderStyle | null>(null);
     const [overlay, setOverlay] = useState<string | null>(null);
     const [overlayOpacity, setOverlayOpacity] = useState(0.5);
@@ -99,6 +114,15 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
         observer.observe(el);
         return () => observer.disconnect();
     }, [loaded, aspect]);
+
+    useEffect(() => {
+        loadRenderPresets()
+            .then(setSaved)
+            .catch((error) => {
+                console.error(error);
+                setPresetMessage('Saved presets could not be loaded from the Forma project.');
+            });
+    }, []);
 
     useEffect(() => () => {
         if (studyUrl.current) URL.revokeObjectURL(studyUrl.current);
@@ -214,7 +238,7 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
             unsubscribe.current = sub.unsubscribe;
 
             const preset = mod.PRESETS[presetName];
-            setStyle(preset);
+            setStyle((current) => current ?? preset); // keep any tweaks when the geometry is reloaded
             setLoaded(true);
             setInfo(
                 `${e.stats.buildingTriangles.toLocaleString()} building triangles in ${buildingMs} ms · `
@@ -230,10 +254,91 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
         }
     };
 
+    // A preset sets the look only: transparency, context treatment and shadow strength belong to the
+    // export being made, so they stay as they are.
+    const applyLook = (key: string, look: LookStyle) => {
+        setPresetName(key);
+        setStyle((current) => (current ? withLook(current, look) : current));
+    };
+
     const choosePreset = (name: string) => {
-        setPresetName(name);
         const preset = presetsRef.current?.[name];
-        if (preset) setStyle({ ...preset });
+        if (preset) applyLook(name, toLook(preset));
+    };
+
+    /** Stores the list in the project; on failure the list on screen is kept and the user is told. */
+    const persistPresets = async (next: SavedPreset[], success: string) => {
+        setSaved(next);
+        try {
+            await saveRenderPresets(next);
+            setPresetMessage(success);
+        } catch (error) {
+            console.error(error);
+            setPresetMessage('Could not save to the Forma project. The change will be lost when the panel closes.');
+        }
+    };
+
+    const saveCurrentLook = async () => {
+        const name = cleanName(newPresetName);
+        if (!style || !name || nameTaken(name, saved) || saved.length >= MAX_PRESETS) return;
+        const preset: SavedPreset = { id: newId(), name, look: toLook(style), saved: new Date().toISOString() };
+        setPresetName(`saved:${preset.id}`);
+        setNewPresetName('');
+        await persistPresets([...saved, preset], `Saved "${name}".`);
+    };
+
+    const updatePreset = async (id: string) => {
+        if (!style) return;
+        const target = saved.find((p) => p.id === id);
+        if (!target) return;
+        await persistPresets(
+            saved.map((p) => (p.id === id ? { ...p, look: toLook(style), saved: new Date().toISOString() } : p)),
+            `Updated "${target.name}" with the current look.`,
+        );
+    };
+
+    const deletePreset = async (id: string) => {
+        const target = saved.find((p) => p.id === id);
+        if (!target) return;
+        // Two clicks: the first arms the button, the second deletes.
+        if (confirmDelete !== id) {
+            setConfirmDelete(id);
+            setTimeout(() => setConfirmDelete((current) => (current === id ? null : current)), 4000);
+            return;
+        }
+        setConfirmDelete(null);
+        if (presetName === `saved:${id}`) setPresetName('');
+        await persistPresets(saved.filter((p) => p.id !== id), `Deleted "${target.name}".`);
+    };
+
+    const exportPresets = () => {
+        const url = URL.createObjectURL(new Blob([serialisePresets(saved)], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'forma-render-presets.json';
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setPresetMessage(`Exported ${saved.length} preset${saved.length === 1 ? '' : 's'}.`);
+    };
+
+    const importPresets = async (event: Event) => {
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.[0];
+        input.value = ''; // lets the same file be chosen again
+        if (!file) return;
+        const parsed = parsePresetFile(await file.text());
+        if (!parsed) { setPresetMessage('That file is not a presets file.'); return; }
+        const merged = mergeImported(saved, parsed.presets, newId);
+        if (merged.added === 0) {
+            setPresetMessage(parsed.skipped > 0 ? `Nothing imported: ${parsed.skipped} entries were not valid presets.` : 'The file had no presets.');
+            return;
+        }
+        const notes = [
+            merged.renamed > 0 ? `${merged.renamed} renamed because the name was taken` : '',
+            parsed.skipped > 0 ? `${parsed.skipped} invalid skipped` : '',
+            merged.dropped > 0 ? `${merged.dropped} left out (limit of ${MAX_PRESETS})` : '',
+        ].filter(Boolean);
+        await persistPresets(merged.presets, `Imported ${merged.added} preset${merged.added === 1 ? '' : 's'}${notes.length ? ` (${notes.join(', ')})` : ''}.`);
     };
 
     const patch = (changes: Partial<RenderStyle>) => setStyle((s) => (s ? { ...s, ...changes } : s));
@@ -352,7 +457,54 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         {Object.keys(presetsRef.current ?? {}).map((name) => (
                             <button class={name === presetName ? '' : 'button-ghost'} onClick={() => choosePreset(name)}>{name}</button>
                         ))}
+                        {saved.map((p) => (
+                            <button class={presetName === `saved:${p.id}` ? '' : 'button-ghost'}
+                                onClick={() => applyLook(`saved:${p.id}`, p.look)}>{p.name}</button>
+                        ))}
                     </div>
+                    <details>
+                        <summary class="muted">Saved presets ({saved.length})</summary>
+                        {canEdit && (
+                            <div class="row row--wrap">
+                                <input type="text" value={newPresetName} maxLength={MAX_NAME_LENGTH} placeholder="Name this look"
+                                    aria-label="Name for the new preset"
+                                    onInput={(e) => setNewPresetName(targetOf(e).value)} />
+                                <button onClick={saveCurrentLook}
+                                    disabled={!cleanName(newPresetName) || nameTaken(newPresetName, saved) || saved.length >= MAX_PRESETS}>
+                                    Save current look
+                                </button>
+                            </div>
+                        )}
+                        {canEdit && nameTaken(newPresetName, saved) && cleanName(newPresetName) && (
+                            <p class="muted">That name is already used. Choose another, or use Update on that preset.</p>
+                        )}
+                        {saved.map((p) => (
+                            <div class="row row--wrap">
+                                <span>{p.name}</span>
+                                {canEdit && (
+                                    <>
+                                        <button class="button-ghost" onClick={() => updatePreset(p.id)}>Update</button>
+                                        <button class="button-ghost" onClick={() => deletePreset(p.id)}>
+                                            {confirmDelete === p.id ? 'Confirm delete' : 'Delete'}
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        ))}
+                        <div class="row row--wrap">
+                            <button class="button-ghost" onClick={exportPresets} disabled={saved.length === 0}>Export file</button>
+                            {canEdit && (
+                                <>
+                                    <button class="button-ghost" onClick={() => presetFile.current?.click()}>Import file…</button>
+                                    <input ref={presetFile} type="file" accept=".json,application/json" style={{ display: 'none' }}
+                                        onChange={importPresets} />
+                                </>
+                            )}
+                        </div>
+                        <p class="muted">
+                            {presetMessage ?? 'A preset saves the look: colours, lines and light. Transparency and context are set per export. Presets are shared with everyone on this Forma project; export a file to use one in another project.'}
+                        </p>
+                    </details>
                     <div class="row row--wrap">
                         <label class="muted" for="re-weight">Edge lines (px)</label>
                         <input id="re-weight" type="range" min="0.05" max="8" step="0.05" value={style.lineWeight}

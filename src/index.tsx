@@ -1258,6 +1258,7 @@ function App() {
                     <RenderEngine
                         buildingPaths={buildingData.map((b) => b.path)}
                         panelColours={panelColours}
+                        canEdit={canEdit}
                         disabled={isLoading}
                     />
 
