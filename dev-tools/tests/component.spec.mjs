@@ -16,9 +16,11 @@ const setInput = (page, selector, value) => page.$eval(selector, (el, v) => {
 }, value);
 
 const loadScene = async (page) => {
-    await page.getByRole('button', { name: /^(Load scene|Reload geometry)$/ }).click();
-    await page.getByRole('button', { name: 'Reload geometry' }).waitFor({ timeout: 20000 });
+    await page.getByRole('button', { name: 'Load scene' }).click();
+    await page.getByRole('button', { name: 'Reload', exact: true }).waitFor({ timeout: 20000 });
 };
+const button = (page, name) => page.getByRole('button', { name, exact: true });
+const pressed = async (locator) => (await locator.getAttribute('aria-pressed')) === 'true';
 
 /** PNG width and height straight from the file header. */
 const pngSize = async (download) => {
@@ -35,8 +37,8 @@ export const runComponentTests = async ({ openPage }) => {
 
     await test('load', async () => {
         await loadScene(page);
-        const info = await page.getByText(/building triangles/).textContent();
-        check('load: geometry loads and stats are shown', /36 building triangles/.test(info), info);
+        const info = await page.locator('.facts').textContent();
+        check('load: geometry loads and scene details are shown', /36 triangles/.test(info), info);
         const variance = await page.$eval('canvas', (c) => {
             const copy = document.createElement('canvas');
             copy.width = c.width; copy.height = c.height;
@@ -51,12 +53,13 @@ export const runComponentTests = async ({ openPage }) => {
     });
 
     await test('presets keep export settings', async () => {
-        await page.getByLabel('Transparent background').check();
+        await page.getByLabel('Transparent').check();
         check('transparent: switching it on sets context to shadows only', await page.$eval('#re-context', (s) => s.value) === 'shadows');
-        await page.getByRole('button', { name: 'Line drawing' }).click();
+        await button(page, 'Line drawing').click();
         check('preset: choosing a preset keeps transparency and context mode',
-            await page.getByLabel('Transparent background').isChecked() && await page.$eval('#re-context', (s) => s.value) === 'shadows');
-        await page.getByLabel('Transparent background').uncheck();
+            await page.getByLabel('Transparent').isChecked() && await page.$eval('#re-context', (s) => s.value) === 'shadows');
+        check('preset: the chosen preset shows as pressed', await pressed(button(page, 'Line drawing')));
+        await page.getByLabel('Transparent').uncheck();
         await page.selectOption('#re-context', 'shown');
     });
 
@@ -75,7 +78,7 @@ export const runComponentTests = async ({ openPage }) => {
         // Reload the panel: the preset comes back from storage.
         await page.evaluate(() => { globalThis.unmount(); globalThis.mount(true); });
         await loadScene(page);
-        check('saved: preset survives a panel reload', await page.getByRole('button', { name: 'Test look' }).isVisible());
+        check('saved: preset survives a panel reload', await button(page, 'Test look').isVisible());
 
         // View-only users can apply but not change presets.
         await page.evaluate(() => { globalThis.unmount(); globalThis.mount(false); });
@@ -83,16 +86,16 @@ export const runComponentTests = async ({ openPage }) => {
         await page.getByText(/^Saved presets/).click();
         check('view-only: no save, update, delete or import',
             await page.getByRole('button', { name: 'Save current look' }).count() === 0
-            && await page.getByRole('button', { name: /^(Update|Delete|Import file…)$/ }).count() === 0);
-        await page.getByRole('button', { name: 'Test look' }).click();
-        check('view-only: a saved preset can still be applied',
-            !(await page.getByRole('button', { name: 'Test look' }).getAttribute('class'))?.includes('button-ghost'));
+            && await page.getByRole('button', { name: /^(Update |Delete |Import from file)/ }).count() === 0
+            && await page.getByRole('button', { name: 'Export to file' }).count() === 1);
+        await button(page, 'Test look').click();
+        check('view-only: a saved preset can still be applied', await pressed(button(page, 'Test look')));
         await page.evaluate(() => { globalThis.unmount(); globalThis.mount(true); });
         await loadScene(page);
     });
 
     await test('soft shadows', async () => {
-        await page.getByRole('button', { name: 'Clay' }).click();
+        await button(page, 'Clay').click();
         await setInput(page, '#re-soft', 2);
         await page.locator('[data-role="soft-shadow-preview"]').waitFor({ timeout: 15000 });
         check('soft: averaged preview appears once the view is still', true);
@@ -107,19 +110,22 @@ export const runComponentTests = async ({ openPage }) => {
     });
 
     await test('sun', async () => {
-        check('sun: follows Forma, in the project time zone',
-            await page.getByText(/2026-06-21 13:00 \(Europe\/London\)/).isVisible());
-        await page.getByLabel('Sun source').selectOption('custom');
-        await page.getByRole('button', { name: '21 Dec' }).first().click();
-        await page.getByText(/2026-12-21 13:00 \(Europe\/London\)/).waitFor({ timeout: 5000 });
+        await page.getByText(/21 Jun 2026, 13:00 \(Europe\/London\)/).waitFor({ timeout: 5000 });
+        check('sun: follows Forma, in the project time zone', true);
+        await button(page, 'Choose a time').click();
+        await button(page, '21 Dec').first().click();
+        await page.getByText(/21 Dec 2026, 13:00 \(Europe\/London\)/).waitFor({ timeout: 5000 });
         check('sun: custom date shows', true);
         await page.getByRole('button', { name: "Set Forma's sun to this" }).click();
         const calls = await page.evaluate(() => globalThis.__formaCalls.filter((c) => c.name === 'sun.setDate').map((c) => c.args));
         check("sun: Set Forma's sun sends the chosen instant (13:00 GMT)", calls.at(-1) === '2026-12-21T13:00:00.000Z', calls);
-        await page.getByLabel('Sun source').selectOption('forma');
+        await button(page, 'Follow Forma').click();
     });
 
     await test('shadow study', async () => {
+        await button(page, 'Shadow study').click();
+        check('study: export switches to the study controls', await page.locator('#re-sdate').isVisible()
+            && await page.locator('#re-scols').isVisible());
         await page.getByRole('button', { name: 'Create shadow study' }).click();
         await page.getByAltText('Shadow study').waitFor({ timeout: 60000 });
         const [download] = await Promise.all([
@@ -129,7 +135,7 @@ export const runComponentTests = async ({ openPage }) => {
         check('study: sheet created and downloadable', /^forma-shadow-study-\d{4}-\d\d-\d\d\.png$/.test(download.suggestedFilename()),
             download.suggestedFilename());
 
-        await page.selectOption('#re-slayout', 'layered');
+        await button(page, 'One layered image').click();
         await page.getByRole('button', { name: 'Create layered image' }).click();
         await page.waitForFunction(() => document.querySelector('img[alt="Shadow study"]') && !document.body.textContent.includes('Rendering the shadow study'), null, { timeout: 60000 });
         const [layered] = await Promise.all([
@@ -137,11 +143,12 @@ export const runComponentTests = async ({ openPage }) => {
             page.getByRole('button', { name: 'Download PNG' }).first().click(),
         ]);
         check('study: layered image created', /^forma-shadow-layers-/.test(layered.suggestedFilename()), layered.suggestedFilename());
-        await page.selectOption('#re-slayout', 'separate');
+        await button(page, 'Separate images').click();
+        await button(page, 'Image').click();
     });
 
     await test('export', async () => {
-        await page.getByLabel('Transparent background').check();
+        await page.getByLabel('Transparent').check();
         const [download] = await Promise.all([
             page.waitForEvent('download', { timeout: 60000 }),
             page.getByRole('button', { name: 'Download PNG' }).last().click(),
@@ -150,13 +157,14 @@ export const runComponentTests = async ({ openPage }) => {
         check('export: transparent PNG named and sized as chosen (2560 wide, 16:9)',
             download.suggestedFilename() === 'forma-panel-render-transparent.png' && size.width === 2560 && size.height === 1440,
             { name: download.suggestedFilename(), ...size });
-        await page.getByLabel('Transparent background').uncheck();
+        await page.getByLabel('Transparent').uncheck();
     });
 
     await test('no location', async () => {
         await page.evaluate(() => { globalThis.unmount(); globalThis.__formaScene.location = null; globalThis.mount(true); });
         await loadScene(page);
-        await page.getByText(/no location/).waitFor({ timeout: 5000 });
+        await page.getByText(/no location/).first().waitFor({ timeout: 5000 });
+        await button(page, 'Shadow study').click();
         check('no location: says so, and the study is disabled',
             true
             && await page.getByRole('button', { name: 'Create shadow study' }).isDisabled());

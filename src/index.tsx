@@ -8,6 +8,7 @@ import {
 } from "./categories";
 import { buildEnvelope, encodeGlb, translationMatrix } from "./envelope";
 import { RenderEngine } from "./RenderEngine";
+import { Field, Legend, Spinner, TabPanel, Tabs, preference } from "./ui";
 import {
     ImportPlan, buildExportRows, categoryValueName, decodeText, parseTable, planImport, toCsv, toTsv,
 } from "./table";
@@ -52,6 +53,13 @@ const ENVELOPE_CATEGORY = 'context-envelope';
 const categoryMode = (id: string): ColorMode => `category:${id}`;
 
 type SortKey = 'index' | 'height' | 'area' | 'floors';
+
+type PanelTab = 'metrics' | 'render' | 'data';
+const PANEL_TABS: { id: PanelTab; label: string }[] = [
+    { id: 'metrics', label: 'Metrics' },
+    { id: 'render', label: 'Render' },
+    { id: 'data', label: 'Data' },
+];
 type SortDir = 'asc' | 'desc';
 
 // =============================================================
@@ -187,19 +195,19 @@ function SummaryStrip({
                 <div class="summary-stat__value">{placeholder ?? totalBuildings}</div>
             </div>
             <div class="summary-stat">
-                <div class="summary-stat__label">Avg Height</div>
+                <div class="summary-stat__label">Avg height</div>
                 <div class="summary-stat__value">
                     {placeholder ?? avgHeight.toFixed(1)}<span class="summary-stat__unit">m</span>
                 </div>
             </div>
             <div class="summary-stat">
-                <div class="summary-stat__label">Max Height</div>
+                <div class="summary-stat__label">Max height</div>
                 <div class="summary-stat__value">
                     {placeholder ?? maxHeight.toFixed(1)}<span class="summary-stat__unit">m</span>
                 </div>
             </div>
             <div class="summary-stat">
-                <div class="summary-stat__label">Façade Area</div>
+                <div class="summary-stat__label">Façade area</div>
                 <div class="summary-stat__value">
                     {placeholder ?? fmt(facadeArea)}<span class="summary-stat__unit">m²</span>
                 </div>
@@ -233,12 +241,13 @@ function SortControls({
 }) {
     return (
         <div class="sort-controls">
-            <span class="sort-controls__label">Sort by</span>
+            <label class="visually-hidden" for="sort-key">Sort buildings by</label>
             <select
+                id="sort-key"
                 value={sortKey}
                 onChange={(e) => setSortKey((e.target as HTMLSelectElement).value as SortKey)}
             >
-                <option value="index">Default order</option>
+                <option value="index">Model order</option>
                 <option value="height">Height</option>
                 <option value="area">Footprint area</option>
                 <option value="floors">Floor count</option>
@@ -247,6 +256,7 @@ function SortControls({
                 class="sort-dir-btn"
                 onClick={() => setSortDir(sortDir === 'asc' ? 'desc' : 'asc')}
                 title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+                aria-label={sortDir === 'asc' ? 'Sorted ascending; switch to descending' : 'Sorted descending; switch to ascending'}
             >
                 {sortDir === 'asc' ? '↑' : '↓'}
             </button>
@@ -276,26 +286,27 @@ function BuildingList({
 
     return (
         <div class="building-list">
+            <div class="building-row building-row--head" aria-hidden="true">
+                <div>No.</div>
+                <div>Height</div>
+                <div>Footprint</div>
+                <div>Floors</div>
+            </div>
             {buildings.map((b) => (
                 <div
                     key={b.path}
                     class={`building-row ${selectedPath === b.path ? 'building-row--selected' : ''}`}
                     onClick={() => onSelect(b)}
-                    title={`Building ${b.number}: show details and move camera`}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(b); } }}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={selectedPath === b.path}
+                    title={`Building ${b.number}: show details and move the camera to it`}
                 >
                     <div class="building-row__index">#{b.number}</div>
-                    <div class="building-row__metric">
-                        <span class="building-row__metric-label">H</span>
-                        {b.height.toFixed(1)}m
-                    </div>
-                    <div class="building-row__metric">
-                        <span class="building-row__metric-label">A</span>
-                        {b.footprintArea.toFixed(0)} m²
-                    </div>
-                    <div class="building-row__metric">
-                        <span class="building-row__metric-label">Fl</span>
-                        {b.floorCount}
-                    </div>
+                    <div class="building-row__metric">{b.height.toFixed(1)} m</div>
+                    <div class="building-row__metric">{formatWhole(b.footprintArea)} m²</div>
+                    <div class="building-row__metric">{b.floorCount}</div>
                 </div>
             ))}
         </div>
@@ -315,19 +326,9 @@ function BuildingListSkeleton({ count = 8 }: { count?: number }) {
     );
 }
 
-// =============================================================
-// LEGEND SWATCH (small helper)
-// =============================================================
-function LegendSwatch({ color, label }: { color: string; label: string }) {
-    return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-            <div style={{ width: '20px', height: '20px', backgroundColor: color, borderRadius: '2px' }}></div>
-            <span>{label}</span>
-        </div>
-    );
-}
-
-const formatArea = (area: number) => area.toFixed(1);
+/** Whole units with thousands separators, e.g. 12,000. */
+const formatWhole = (n: number) => Math.round(n).toLocaleString('en-GB');
+const formatArea = formatWhole;
 const formatPercent = (area: number, total: number) =>
     total > 0 ? ((area / total) * 100).toFixed(1) : '0.0';
 
@@ -347,9 +348,9 @@ function BuildingDetail({ building, categories, assignments }: {
             <h3>Building {b.number}</h3>
             <div class="building-detail__grid">
                 <div><span class="muted">Height</span> {b.height.toFixed(1)} m</div>
-                <div><span class="muted">Footprint</span> {b.footprintArea.toFixed(0)} m²</div>
+                <div><span class="muted">Footprint</span> {formatWhole(b.footprintArea)} m²</div>
                 <div><span class="muted">Floors (est.)</span> {b.floorCount}</div>
-                <div><span class="muted">Volume (est.)</span> {b.volume.toFixed(0)} m³</div>
+                <div><span class="muted">Volume (est.)</span> {formatWhole(b.volume)} m³</div>
                 {categories.map((cat) => (
                     <div key={cat.id}>
                         <span class="muted">{cat.name}</span> {categoryValueName(cat, assignments, b.path) || '—'}
@@ -474,8 +475,10 @@ function CategoryPanel({
                     <span class="category-value__count" title="Buildings with this value">{counts[v.id] ?? 0}</span>
                     {editable && (
                         <>
-                            <button class="button-ghost" onClick={() => onAssign(v.id)} title="Assign the buildings selected in Forma">
-                                Assign selected
+                            <button class="button-ghost" onClick={() => onAssign(v.id)}
+                                title={`Give the buildings selected in Forma the value ${v.name}`}
+                                aria-label={`Assign selected buildings to ${v.name}`}>
+                                Assign
                             </button>
                             <button class="button-ghost" onClick={() => onDeleteValue(v.id)} title={`Delete ${v.name}`} aria-label={`Delete ${v.name}`}>
                                 ×
@@ -522,7 +525,7 @@ function CategoryPanel({
             )}
             <p class="muted">
                 {message ?? (editable
-                    ? 'Select buildings in Forma, then click Assign selected next to a value.'
+                    ? 'Select buildings in Forma, then click Assign next to a value.'
                     : 'View only: edit access to this Forma project is needed to change categories.')}
             </p>
         </div>
@@ -605,7 +608,13 @@ function App() {
     const [envelopeMessage, setEnvelopeMessage] = useState<string | null>(null);
     const fileInput = useRef<HTMLInputElement>(null);
 
-    // NEW in Pass 2: sort state
+    const [tab, setTab] = useState<PanelTab>(() => {
+        const saved = preference.get('tab');
+        return PANEL_TABS.some((t) => t.id === saved) ? saved as PanelTab : 'metrics';
+    });
+    const chooseTab = (next: PanelTab) => { setTab(next); preference.set('tab', next); };
+
+    // Sort state
     const [sortKey, setSortKey] = useState<SortKey>('index');
     const [sortDir, setSortDir] = useState<SortDir>('asc');
 
@@ -1056,6 +1065,20 @@ function App() {
     // =========================================================
     // RENDER
     // =========================================================
+    const modeOptions: [ColorMode, string][] = [
+        ['height', 'Height'],
+        ['area', 'Footprint area'],
+        ['volume', 'Volume (estimated)'],
+        ['floors', 'Floors (estimated)'],
+        ['facadeDominant', 'Façade, dominant orientation'],
+        ['facadeMixed', 'Façade, each face'],
+    ];
+    const modeLabel = (mode: ColorMode) =>
+        modeOptions.find(([m]) => m === mode)?.[1]
+        ?? categories.find((cat) => categoryMode(cat.id) === mode)?.name ?? 'a removed category';
+    const isFacadeMode = colorMode === 'facadeDominant' || colorMode === 'facadeMixed';
+    const busyAll = isLoading || buildingData.length === 0;
+
     return (
         <>
             {errorMessage && <ErrorBanner message={errorMessage} />}
@@ -1068,234 +1091,251 @@ function App() {
                 isLoading={isLoading}
             />
 
-            <div class="section">
-                <h3>Buildings</h3>
-                <SortControls
-                    sortKey={sortKey} sortDir={sortDir}
-                    setSortKey={setSortKey} setSortDir={setSortDir}
-                />
-                {isLoading
-                    ? <BuildingListSkeleton count={8} />
-                    : <BuildingList
-                        buildings={sortedBuildings}
-                        selectedPath={selectedBuilding}
-                        onSelect={focusBuilding}
-                    />
-                }
-                {selected && <BuildingDetail building={selected} categories={categories} assignments={assignments} />}
-                <p class="muted">
-                    Click a building to see its details and move the camera to it. Floors and volume are
-                    estimates ({FLOOR_TO_FLOOR_M} m floor-to-floor, extruded footprint).
-                    For GFA, site area and FAR use Forma's Area Metrics panel.
-                </p>
-            </div>
+            <Tabs label="Panel sections" tabs={PANEL_TABS} active={tab} onChange={chooseTab} />
 
-            {!isLoading && (
-                <>
-                    <div class="section">
-                        <h3>Colour Mode</h3>
-                        <div class="row row--wrap">
-                            {([
-                                ['height', 'Height'],
-                                ['area', 'Footprint'],
-                                ['volume', 'Volume (est.)'],
-                                ['floors', 'Floors (est.)'],
-                                ['facadeDominant', 'Façade (Dominant)'],
-                                ['facadeMixed', 'Façade (Mixed)'],
-                                ...categories.map((cat): [ColorMode, string] => [categoryMode(cat.id), cat.name]),
-                            ] as [ColorMode, string][]).map(([mode, label]) => (
-                                <button
-                                    key={mode}
-                                    class={`button-ghost ${colorMode === mode ? 'is-active' : ''}`}
-                                    onClick={() => { setColorMode(mode); setCategoryMessage(null); }}
+            <TabPanel id="metrics" active={tab === 'metrics'}>
+                <div class="section">
+                    <div class="section__head">
+                        <h3>Buildings</h3>
+                        <SortControls
+                            sortKey={sortKey} sortDir={sortDir}
+                            setSortKey={setSortKey} setSortDir={setSortDir}
+                        />
+                    </div>
+                    {isLoading
+                        ? <BuildingListSkeleton count={6} />
+                        : <BuildingList
+                            buildings={sortedBuildings}
+                            selectedPath={selectedBuilding}
+                            onSelect={focusBuilding}
+                        />
+                    }
+                    {selected && <BuildingDetail building={selected} categories={categories} assignments={assignments} />}
+                    <p class="help">
+                        Select a building to see its details and move the camera to it. Floors and volume are
+                        estimates ({FLOOR_TO_FLOOR_M} m floor to floor, extruded footprint). GFA, site area and FAR
+                        are in Forma's Area Metrics panel.
+                    </p>
+                </div>
+
+                {!isLoading && (
+                    <>
+                        <div class="section">
+                            <h3>Colour buildings</h3>
+                            <Field label="Colour by" htmlFor="colour-mode">
+                                <select
+                                    id="colour-mode"
+                                    value={colorMode}
+                                    onChange={(e) => { setColorMode((e.target as HTMLSelectElement).value as ColorMode); setCategoryMessage(null); }}
                                 >
-                                    {label}
+                                    <optgroup label="Measured">
+                                        {modeOptions.map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}
+                                    </optgroup>
+                                    {categories.length > 0 && (
+                                        <optgroup label="Your categories">
+                                            {categories.map((cat) => <option key={cat.id} value={categoryMode(cat.id)}>{cat.name}</option>)}
+                                        </optgroup>
+                                    )}
+                                </select>
+                            </Field>
+
+                            {colorMode === 'height' && <Legend items={[
+                                [toHex(getColorByHeight(5)), 'Under 10 m'],
+                                [toHex(getColorByHeight(20)), '10 to 30 m'],
+                                [toHex(getColorByHeight(40)), '30 to 50 m'],
+                                [toHex(getColorByHeight(60)), '50 m and over'],
+                            ]} />}
+                            {colorMode === 'area' && <Legend items={[
+                                [toHex(getColorByArea(50)), 'Under 100 m²'],
+                                [toHex(getColorByArea(200)), '100 to 500 m²'],
+                                [toHex(getColorByArea(700)), '500 to 1,000 m²'],
+                                [toHex(getColorByArea(2000)), '1,000 m² and over'],
+                            ]} />}
+                            {colorMode === 'volume' && <Legend items={[
+                                [toHex(getColorByVolume(500)), 'Under 1,000 m³'],
+                                [toHex(getColorByVolume(2000)), '1,000 to 5,000 m³'],
+                                [toHex(getColorByVolume(10000)), '5,000 to 15,000 m³'],
+                                [toHex(getColorByVolume(20000)), '15,000 m³ and over'],
+                            ]} />}
+                            {colorMode === 'floors' && <Legend items={[
+                                [toHex(getColorByFloorCount(1)), '1 to 2 floors'],
+                                [toHex(getColorByFloorCount(4)), '3 to 6 floors'],
+                                [toHex(getColorByFloorCount(10)), '7 to 14 floors'],
+                                [toHex(getColorByFloorCount(20)), '15 floors and over'],
+                            ]} />}
+                            {isFacadeMode && (
+                                <>
+                                    <Legend items={(['North', 'South', 'East', 'West'] as const).map((o) => [
+                                        toHex(ORIENTATION_COLORS[o]),
+                                        `${o} ${formatPercent(facadeTotals[o.toLowerCase() as 'north'], facadeTotals.total)}%`,
+                                    ])} />
+                                    <p class="help">
+                                        Façade area: {formatArea(facadeTotals.total)} m² in total
+                                        (north {formatArea(facadeTotals.north)}, south {formatArea(facadeTotals.south)},
+                                        east {formatArea(facadeTotals.east)}, west {formatArea(facadeTotals.west)}).
+                                    </p>
+                                </>
+                            )}
+
+                            <div class="actions">
+                                <button onClick={colorBuildings} disabled={busyAll || isColoring}>
+                                    {isColoring ? <><Spinner /> Applying…</> : 'Apply colours'}
                                 </button>
-                            ))}
+                                <button class="button-ghost" onClick={reset} disabled={appliedMode === null && !isColoring}>
+                                    Clear colours
+                                </button>
+                            </div>
+                            <p class="help">
+                                {appliedMode
+                                    ? `Forma's 3D view shows colours by ${modeLabel(appliedMode).toLowerCase()}.`
+                                    : 'Colours every building in the proposal in Forma\'s 3D view. No selection needed.'}
+                            </p>
+
+                            {canEdit && categoriesReady && (
+                                <details class="disclosure">
+                                    <summary>Add a category</summary>
+                                    <p class="help" style={{ marginTop: 0 }}>
+                                        Your own grouping, such as phase or tenure. It becomes a colour option and an export column.
+                                    </p>
+                                    <div class="row" style={{ marginTop: '0.6em' }}>
+                                        <input
+                                            type="text"
+                                            value={newCategoryName}
+                                            placeholder="Category name, e.g. Phase"
+                                            aria-label="New category name"
+                                            style={{ flex: 1 }}
+                                            onInput={(e) => setNewCategoryName((e.target as HTMLInputElement).value)}
+                                            onKeyDown={(e) => { if (e.key === 'Enter') createCategory(); }}
+                                        />
+                                        <button class="button-ghost" onClick={createCategory} disabled={!newCategoryName.trim()}>
+                                            Add category
+                                        </button>
+                                    </div>
+                                </details>
+                            )}
+                            {storageWarning && <p class="status status--warning">⚠ {storageWarning}</p>}
                         </div>
-                        {canEdit && categoriesReady && (
-                            <div class="row" style={{ marginTop: '0.8em' }}>
-                                <input
-                                    type="text"
-                                    value={newCategoryName}
-                                    placeholder="New category, e.g. Phase"
-                                    onInput={(e) => setNewCategoryName((e.target as HTMLInputElement).value)}
-                                    onKeyDown={(e) => { if (e.key === 'Enter') createCategory(); }}
-                                />
-                                <button class="button-ghost" onClick={createCategory} disabled={!newCategoryName.trim()}>
-                                    Add category
-                                </button>
+
+                        {activeCategory && (
+                            <CategoryPanel
+                                key={activeCategory.id}
+                                category={activeCategory}
+                                counts={categoryCounts.counts}
+                                unassignedCount={categoryCounts.unassigned}
+                                editable={canEdit && categoriesReady}
+                                message={categoryMessage}
+                                onRename={(name) => editCategory(activeCategory.id, (cat) => ({ ...cat, name }))}
+                                onDelete={() => deleteCategory(activeCategory.id)}
+                                onAddValue={(name, color) => editCategory(activeCategory.id, (cat) => ({
+                                    ...cat, values: [...cat.values, { id: newId(), name, color }],
+                                }))}
+                                onUpdateValue={(valueId, patch) => editCategory(activeCategory.id, (cat) => ({
+                                    ...cat, values: cat.values.map((v) => (v.id === valueId ? { ...v, ...patch } : v)),
+                                }))}
+                                onDeleteValue={(valueId) => deleteValue(activeCategory.id, valueId)}
+                                onAssign={(valueId) => assignSelected(activeCategory.id, valueId)}
+                                onClear={() => assignSelected(activeCategory.id, null)}
+                            />
+                        )}
+
+                        {canEdit && (
+                            <div class="section">
+                                <h3>Context envelope</h3>
+                                <Field label="Margin" htmlFor="envelope-margin">
+                                    <input
+                                        id="envelope-margin"
+                                        type="number" min="0" step="0.5"
+                                        value={envelopeMargin}
+                                        onInput={(e) => setEnvelopeMargin(Math.max(0, Number((e.target as HTMLInputElement).value) || 0))}
+                                    />
+                                    <span class="muted">m</span>
+                                </Field>
+                                <div class="actions">
+                                    <button onClick={createEnvelope} disabled={busyAll || isEnveloping}>
+                                        {isEnveloping ? <><Spinner /> Working…</> : 'Create envelope over selection'}
+                                    </button>
+                                    <button class="button-ghost" onClick={removeEnvelopes} disabled={isLoading || isEnveloping}>
+                                        Remove all
+                                    </button>
+                                </div>
+                                <p class="help">
+                                    {envelopeMessage ?? 'Select buildings in Forma, then add a red volume around them, stepped to follow setbacks and lower blocks. It is saved in the proposal as a virtual element, so analyses ignore it.'}
+                                </p>
                             </div>
                         )}
-                        {storageWarning && <p class="muted">⚠ {storageWarning}</p>}
-                    </div>
+                    </>
+                )}
+            </TabPanel>
 
-                    {colorMode === 'height' && (
-                        <div class="section">
-                            <h3>Height Legend</h3>
-                            <LegendSwatch color="rgb(33, 71, 55)" label="Low (0–10m)" />
-                            <LegendSwatch color="rgb(85, 107, 47)" label="Medium (10–30m)" />
-                            <LegendSwatch color="rgb(189, 132, 59)" label="High (30–50m)" />
-                            <LegendSwatch color="rgb(225, 169, 94)" label="Very High (50m+)" />
-                        </div>
-                    )}
-                    {colorMode === 'area' && (
-                        <div class="section">
-                            <h3>Footprint Area Legend</h3>
-                            <LegendSwatch color="rgb(173, 216, 230)" label="Small (<100 m²)" />
-                            <LegendSwatch color="rgb(100, 149, 237)" label="Medium (100–500 m²)" />
-                            <LegendSwatch color="rgb(65, 105, 225)" label="Large (500–1000 m²)" />
-                            <LegendSwatch color="rgb(25, 25, 112)" label="Very Large (1000 m²+)" />
-                        </div>
-                    )}
-                    {colorMode === 'volume' && (
-                        <div class="section">
-                            <h3>Volume Legend (estimated)</h3>
-                            <LegendSwatch color="rgb(255, 182, 193)" label="Small (<1000 m³)" />
-                            <LegendSwatch color="rgb(255, 105, 180)" label="Medium (1000–5000 m³)" />
-                            <LegendSwatch color="rgb(199, 21, 133)" label="Large (5000–15000 m³)" />
-                            <LegendSwatch color="rgb(139, 0, 139)" label="Very Large (15000 m³+)" />
-                        </div>
-                    )}
-                    {colorMode === 'floors' && (
-                        <div class="section">
-                            <h3>Floor Count Legend (estimated)</h3>
-                            <LegendSwatch color="rgb(144, 238, 144)" label="Low-rise (1–2 floors)" />
-                            <LegendSwatch color="rgb(34, 139, 34)" label="Mid-rise (3–6 floors)" />
-                            <LegendSwatch color="rgb(255, 140, 0)" label="High-rise (7–14 floors)" />
-                            <LegendSwatch color="rgb(178, 34, 34)" label="Tower (15+ floors)" />
-                        </div>
-                    )}
-                    {activeCategory && (
-                        <CategoryPanel
-                            key={activeCategory.id}
-                            category={activeCategory}
-                            counts={categoryCounts.counts}
-                            unassignedCount={categoryCounts.unassigned}
-                            editable={canEdit && categoriesReady}
-                            message={categoryMessage}
-                            onRename={(name) => editCategory(activeCategory.id, (cat) => ({ ...cat, name }))}
-                            onDelete={() => deleteCategory(activeCategory.id)}
-                            onAddValue={(name, color) => editCategory(activeCategory.id, (cat) => ({
-                                ...cat, values: [...cat.values, { id: newId(), name, color }],
-                            }))}
-                            onUpdateValue={(valueId, patch) => editCategory(activeCategory.id, (cat) => ({
-                                ...cat, values: cat.values.map((v) => (v.id === valueId ? { ...v, ...patch } : v)),
-                            }))}
-                            onDeleteValue={(valueId) => deleteValue(activeCategory.id, valueId)}
-                            onAssign={(valueId) => assignSelected(activeCategory.id, valueId)}
-                            onClear={() => assignSelected(activeCategory.id, null)}
-                        />
-                    )}
-                    {(colorMode === 'facadeDominant' || colorMode === 'facadeMixed') && (
-                        <>
-                            <div class="section">
-                                <h3>Orientation Legend</h3>
-                                <LegendSwatch color="rgb(100, 149, 237)" label="North" />
-                                <LegendSwatch color="rgb(255, 140, 0)" label="South" />
-                                <LegendSwatch color="rgb(255, 215, 0)" label="East" />
-                                <LegendSwatch color="rgb(186, 85, 211)" label="West" />
-                            </div>
-                            <div class="section">
-                                <h3>Overall Façade Statistics</h3>
-                                <div><strong>North:</strong> {formatArea(facadeTotals.north)} m² ({formatPercent(facadeTotals.north, facadeTotals.total)}%)</div>
-                                <div><strong>South:</strong> {formatArea(facadeTotals.south)} m² ({formatPercent(facadeTotals.south, facadeTotals.total)}%)</div>
-                                <div><strong>East:</strong> {formatArea(facadeTotals.east)} m² ({formatPercent(facadeTotals.east, facadeTotals.total)}%)</div>
-                                <div><strong>West:</strong> {formatArea(facadeTotals.west)} m² ({formatPercent(facadeTotals.west, facadeTotals.total)}%)</div>
-                                <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--border-subtle)' }}>
-                                    <strong>Total Façade Area:</strong> {formatArea(facadeTotals.total)} m²
-                                </div>
-                            </div>
-                        </>
-                    )}
-
-                    <div class="section">
-                        <div class="row">
-                            <button onClick={colorBuildings} disabled={isLoading || isColoring || buildingData.length === 0}>
-                                {isColoring ? <><span class="spinner">⟳</span> Colouring…</> : 'Apply Colours to All Buildings'}
-                            </button>
-                            <button class="button-ghost" onClick={reset}>Reset</button>
-                        </div>
-                    </div>
-
-                    {canEdit && (
-                        <div class="section">
-                            <h3>Context Envelope</h3>
-                            <div class="row">
-                                <label class="muted" for="envelope-margin">Margin (m)</label>
-                                <input
-                                    id="envelope-margin"
-                                    type="number" min="0" step="0.5"
-                                    value={envelopeMargin}
-                                    onInput={(e) => setEnvelopeMargin(Math.max(0, Number((e.target as HTMLInputElement).value) || 0))}
-                                />
-                            </div>
-                            <button onClick={createEnvelope} disabled={isLoading || isEnveloping || buildingData.length === 0}>
-                                {isEnveloping ? <><span class="spinner">⟳</span> Working…</> : 'Create Envelope over Selection'}
-                            </button>
-                            <button class="button-ghost" onClick={removeEnvelopes} disabled={isLoading || isEnveloping}>
-                                Remove Envelopes
-                            </button>
-                            <p class="muted">
-                                {envelopeMessage ?? 'Select buildings in Forma, then add a red volume enclosing them (stepped to follow setbacks and lower blocks). It is saved in the proposal as a virtual element, so analyses ignore it. Remove Envelopes deletes all envelopes created here.'}
-                            </p>
-                        </div>
-                    )}
-
-                    <RenderEngine
+            <TabPanel id="render" active={tab === 'render'}>
+                {isLoading
+                    ? <div class="section"><p class="status"><Spinner /> Reading buildings from Forma…</p></div>
+                    : <RenderEngine
                         buildingPaths={buildingData.map((b) => b.path)}
                         panelColours={panelColours}
                         canEdit={canEdit}
                         disabled={isLoading}
-                    />
+                    />}
+            </TabPanel>
 
-                    <div class="section">
-                        <h3>Export</h3>
-                        <div class="row">
-                            <button onClick={exportCsv} disabled={buildingData.length === 0}>Download CSV</button>
-                            <button class="button-ghost" onClick={copyTable} disabled={buildingData.length === 0}>
-                                Copy Table
-                            </button>
-                        </div>
-                        <p class="muted">
-                            {exportMessage ?? 'One row per building. If the download does not start inside Forma, use Copy Table and paste into Excel.'}
-                        </p>
+            <TabPanel id="data" active={tab === 'data'}>
+                <div class="section">
+                    <h3>Export</h3>
+                    <p class="help" style={{ marginTop: 0 }}>
+                        One row per building, with the measured values and your categories. The Forma ID column
+                        lets you import category changes back.
+                    </p>
+                    <div class="actions">
+                        <button onClick={exportCsv} disabled={busyAll}>Download CSV</button>
+                        <button class="button-ghost" onClick={copyTable} disabled={busyAll}>Copy table</button>
                     </div>
+                    <p class="help">
+                        {exportMessage ?? 'If the download does not start inside Forma, use Copy table and paste into Excel.'}
+                    </p>
+                </div>
 
-                    {canEdit && categoriesReady && (
-                        <div class="section">
-                            <h3>Import Categories</h3>
-                            <div class="row row--wrap">
-                                <button class="button-ghost" onClick={() => fileInput.current?.click()}>Choose CSV…</button>
-                                <button class="button-ghost" onClick={() => setShowPaste(!showPaste)}>Paste Table</button>
-                                <input
-                                    ref={fileInput}
-                                    type="file"
-                                    accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values"
-                                    style={{ display: 'none' }}
-                                    onChange={onFileChosen}
-                                />
-                            </div>
-                            {showPaste && (
-                                <div class="import-paste">
-                                    <textarea
-                                        value={pasteText}
-                                        placeholder="Paste rows copied from Excel, including the header row"
-                                        onInput={(e) => setPasteText((e.target as HTMLTextAreaElement).value)}
-                                    />
-                                    <button onClick={() => startImport(pasteText)} disabled={!pasteText.trim()}>Preview</button>
-                                </div>
-                            )}
-                            {importPlan && (
-                                <ImportPreview plan={importPlan} onApply={applyImport} onCancel={() => setImportRows(null)} />
-                            )}
-                            <p class="muted">
-                                {importMessage ?? 'Edit the category columns of an exported CSV, then import it. Rows are matched by the Forma ID column. A blank cell clears the value, a new column creates a category, and buildings missing from the file are left unchanged.'}
-                            </p>
+                {canEdit && categoriesReady && !isLoading && (
+                    <div class="section">
+                        <h3>Import categories</h3>
+                        <p class="help" style={{ marginTop: 0 }}>
+                            Edit the category columns of an exported table, then bring it back. Rows are matched by
+                            Forma ID. A blank cell clears the value, a new column creates a category, and buildings
+                            missing from the file are left unchanged. You see a preview before anything changes.
+                        </p>
+                        <div class="actions">
+                            <button class="button-ghost" onClick={() => fileInput.current?.click()}>Choose CSV…</button>
+                            <button class="button-ghost" aria-expanded={showPaste} onClick={() => setShowPaste(!showPaste)}>
+                                Paste table
+                            </button>
+                            <input
+                                ref={fileInput}
+                                type="file"
+                                accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values"
+                                style={{ display: 'none' }}
+                                onChange={onFileChosen}
+                            />
                         </div>
-                    )}
-                </>
-            )}
+                        {showPaste && (
+                            <div class="import-paste">
+                                <textarea
+                                    value={pasteText}
+                                    aria-label="Table to import"
+                                    placeholder="Paste rows copied from Excel, including the header row"
+                                    onInput={(e) => setPasteText((e.target as HTMLTextAreaElement).value)}
+                                />
+                                <button onClick={() => startImport(pasteText)} disabled={!pasteText.trim()}>Preview</button>
+                            </div>
+                        )}
+                        {importPlan && (
+                            <ImportPreview plan={importPlan} onApply={applyImport} onCancel={() => setImportRows(null)} />
+                        )}
+                        {importMessage && <p class="help">{importMessage}</p>}
+                    </div>
+                )}
+                {!canEdit && !isLoading && (
+                    <p class="help">Importing categories needs edit access to this Forma project.</p>
+                )}
+            </TabPanel>
         </>
     );
 }

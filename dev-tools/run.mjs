@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Test harness runner. See dev-tools/README.md.
 //
-//   node dev-tools/run.mjs                 all suites: pure, engine, component
+//   node dev-tools/run.mjs                 all suites: pure, engine, component, panel
 //   node dev-tools/run.mjs pure engine     only those suites
 //   node dev-tools/run.mjs shots           screenshots of the whole panel into dev-tools/.out/shots/
 //
@@ -19,8 +19,8 @@ const out = join(here, '.out');
 const require = createRequire(import.meta.url);
 
 const args = process.argv.slice(2);
-const suites = args.length ? args : ['pure', 'engine', 'component'];
-const known = ['pure', 'engine', 'component', 'shots'];
+const suites = args.length ? args : ['pure', 'engine', 'component', 'panel'];
+const known = ['pure', 'engine', 'component', 'panel', 'shots'];
 for (const s of suites) if (!known.includes(s)) { console.error(`Unknown suite "${s}". Use: ${known.join(', ')}`); process.exit(2); }
 
 rmSync(out, { recursive: true, force: true });
@@ -73,7 +73,7 @@ if (browserSuites.length) {
 
 /** A blank page with an #app element, the given CSS and script, served from about:blank. */
 const openPage = async (script, css, viewport = { width: 420, height: 900 }) => {
-    const context = await browser.newContext({ viewport, acceptDownloads: true });
+    const context = await browser.newContext({ viewport, acceptDownloads: true, locale: 'en-GB', timezoneId: 'Europe/London' });
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
@@ -103,6 +103,12 @@ try {
             const file = await bundle('tests/component.page.tsx', 'component.js', { format: 'iife' });
             const { runComponentTests } = await import('./tests/component.spec.mjs');
             report('component', await runComponentTests({ openPage: () => openPage(file, file.replace(/\.js$/, '.css')) }));
+        }
+
+        if (suite === 'panel') {
+            const file = await bundle('tests/panel.page.tsx', 'panel.js', { format: 'iife' });
+            const { runPanelTests } = await import('./tests/panel.spec.mjs');
+            report('panel', await runPanelTests({ openPage: () => openPage(file, file.replace(/\.js$/, '.css')) }));
         }
 
         if (suite === 'shots') {

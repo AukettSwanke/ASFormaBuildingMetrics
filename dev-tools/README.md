@@ -17,7 +17,7 @@ npm install --no-save playwright && npx playwright install chromium
 Then, from the repository root:
 
 ```bash
-npm test                              # all suites: pure, engine, component
+npm test                              # all suites: pure, engine, component, panel
 node dev-tools/run.mjs pure           # one or more named suites
 node dev-tools/run.mjs shots          # screenshots of the whole panel, light and dark
 npm run typecheck:tests               # type-check the harness and the app together
@@ -33,7 +33,8 @@ screenshots and a run stamp go to `dev-tools/.out/` (git-ignored).
 | `pure` | node | `sunPosition`, `timeZone` (incl. clock changes in both hemispheres), `silhouette`, `presets`, `studySheet.studyTimes`, `table` parsing |
 | `engine` | headless Chromium, SwiftShader WebGL | `PanelRenderer` measured in pixels: shadow length against `height / tan(elevation)` at 45°, 20° and 10°; soft-shadow penumbra and length; banded versus single-band averaging; transparent export alpha; export size and aspect; layered shadow masks with and without context |
 | `component` | headless Chromium | `<RenderEngine>` driven like a user: load, presets keeping export settings, saved presets (storage, reload, duplicate names, view-only users), soft preview, sun modes and *Set Forma's sun*, shadow study and layered image downloads, PNG export size, project with no location |
-| `shots` | headless Chromium | Not a test. Full-page PNGs of the whole panel (`src/index.tsx`) at 380 px wide, before and after *Load scene* |
+| `panel` | headless Chromium | The whole panel (`src/index.tsx`): tabs and keyboard navigation, building list and camera move, colour by / apply / clear, the render keeping its loaded scene across tab switches, CSV download |
+| `shots` | headless Chromium | Not a test. Full-page PNGs of the whole panel at 380 px wide, light and dark: Metrics (also with a building selected and a category open), Render (loaded, and with the shadow-study export and custom sun open) and Data |
 
 ## Files
 
@@ -53,8 +54,12 @@ screenshots and a run stamp go to `dev-tools/.out/` (git-ignored).
   geometry, and put the measured value in `detail` so the log shows it.
 - Prove a new check can fail: reintroduce the bug (or break the code), confirm the check fails, then
   restore the file byte for byte (`cp` a backup and `cmp` it).
-- Component locators: prefer labels, roles and visible text; use element ids (`#re-soft`, `#re-context`,
-  `#re-slayout`) where there is no label. The soft preview canvas has `data-role="soft-shadow-preview"`.
-  If you change UI wording or ids, update `tests/component.spec.mjs` in the same commit.
+- Locators: prefer labels, roles and visible text (`exact: true` for short button names, since
+  Playwright matches substrings); use element ids (`#re-soft`, `#re-context`, `#colour-mode`) where that
+  is clearer. Choices made with the `Segmented` control are buttons with `aria-pressed`. The soft preview
+  canvas has `data-role="soft-shadow-preview"`. If you change UI wording or ids, update the specs in the
+  same commit.
+- Pages run with locale `en-GB` and time zone `Europe/London`. Native date and time inputs still follow
+  the browser's own language, so screenshots may show US formats; in Forma they follow each user's browser.
 - Range inputs: set them with the `setInput` helper, which fires the `input` event Preact listens for.
 - Read UI text with `waitFor`, not `isVisible`: effects update text after the click resolves.

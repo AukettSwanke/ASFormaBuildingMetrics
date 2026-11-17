@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an **Autodesk Forma embedded panel** — a Preact + Vite + TypeScript app that runs inside the Forma urban design tool as a side panel. It reads building geometry from the active Forma scene, computes metrics, applies per-building colour overlays, and has its own three.js renderer ("Render (panel engine)") that follows the Forma camera and exports presentation images and shadow studies.
+This is an **Autodesk Forma embedded panel** — a Preact + Vite + TypeScript app that runs inside the Forma urban design tool as a side panel. It reads building geometry from the active Forma scene, computes metrics, applies per-building colour overlays, and has its own three.js renderer (the Render tab) that follows the Forma camera and exports presentation images and shadow studies.
 
 Use British English in code comments, UI text and documentation.
 
@@ -33,17 +33,19 @@ See `dev-tools/README.md`. In short: `run.mjs` bundles test entries with esbuild
 - `pure` (node): sun position, time zones, silhouettes, presets, table parsing.
 - `engine` (browser): `PanelRenderer` measured in pixels (shadow lengths, penumbrae, bands, transparency, export size, layered masks).
 - `component` (browser): `<RenderEngine>` driven by Playwright locators.
-- `shots`: screenshots of the whole panel at 380 px wide.
+- `panel` (browser): the whole panel — tabs, metrics workflow, render surviving tab switches, CSV export.
+- `shots`: screenshots of every tab at 380 px wide, light and dark. Look at them after any UI change.
 
-Rules: measure against expected values rather than eyeballing; prove a new check can fail by reintroducing the bug and restoring the file byte for byte; when UI wording or element ids change, update `dev-tools/tests/component.spec.mjs` in the same commit. The harness does not replace testing in Forma (synthetic boxes, software GPU, stub storage).
+Rules: measure against expected values rather than eyeballing; prove a new check can fail by reintroducing the bug and restoring the file byte for byte; when UI wording or element ids change, update `dev-tools/tests/component.spec.mjs` and `panel.spec.mjs` in the same commit. The harness does not replace testing in Forma (synthetic boxes, software GPU, stub storage).
 
 ## Architecture
 
-Single screen, no routing, no state library, no component folder. Files under `src/`:
+Three tabs (Metrics, Render, Data), no routing, no state library, no component folder. Files under `src/`:
 
 | File | Role |
 |---|---|
-| `index.tsx` (~1,300 lines) | The original metrics panel and the app root. Mounts `<RenderEngine>` |
+| `index.tsx` (~1,330 lines) | The metrics panel and the app root: summary strip, tabs, Metrics and Data tabs. Mounts `<RenderEngine>` in the Render tab |
+| `ui.tsx` | Shared presentational components: `Tabs`/`TabPanel`, `Segmented`, `Field`, `Legend`, `Spinner`, and `preference` (per-viewer `localStorage`, wrapped in try/catch because Forma's iframe may block it) |
 | `categories.ts` | User-defined category model and project storage. Also exports `readJson` / `writeJson` (writes queued per key), reused by presets |
 | `table.ts` | Export table and CSV import (pure) |
 | `envelope.ts` | Context-envelope geometry and GLB encoder (pure) |
@@ -65,14 +67,14 @@ Single screen, no routing, no state library, no component folder. Files under `s
 - `Forma.geometry.getFootprint({ path })` — 2D polygon coordinates for footprint area
 - `Forma.selection.getSelection()` — scene selection (read-only; the SDK has no `setSelection`)
 - `Forma.camera.move({ position, target })` — row click frames the building
-- `Forma.camera.getCurrent()` / `subscribe()` — the render follows the Forma camera; `camera.capture({ width, height })` — *Overlay Forma view* comparison
+- `Forma.camera.getCurrent()` / `subscribe()` — the render follows the Forma camera; `camera.capture({ width, height })` — *Compare with Forma* overlay
 - `Forma.sun.getDate()` / `setDate({ date })`, `Forma.project.getGeoLocation()` (`[lat, lon]`) and `getTimezone()` — sun direction and the project time zone
 - `Forma.render.elementColors.set({ pathsToColor })` / `.clearAll()` — one hex colour per building (all modes except Façade (Mixed))
 - `Forma.render.updateMesh({ id, geometryData: { position, color } })` — per-face overlay mesh, used only for Façade (Mixed) (RGBA `Uint8Array`, 4 bytes × 3 vertices per triangle)
 - `Forma.render.cleanup()` — remove custom colour overlays
 - `Forma.extensions.storage.getTextObject` / `setObject` — project-scoped storage: `categories.json` (definitions, project-wide), `assignments-<proposalId>.json` (categoryId → building path → valueId) and `render-presets.json` (saved render presets, project-wide). Writes to one key are queued so they land in order
 - `Forma.udm.getRootUrn()` — proposal identity; its last segment is a revision that changes on every edit, so `getProposalId` keeps only the `<id>` segment
-- `Forma.integrateElements.uploadFile` / `createElementV2` + `Forma.elements.add` — Context Envelope: a stack of height bands is built from the selected buildings' mesh (each band is the convex hull, offset by a margin, of the geometry reaching above its base, so setbacks and lower blocks are followed; roofs under 4 m² or within 1.5 m of each other do not create steps), then encoded as a GLB, uploaded, created as a `virtual: true` element (analyses ignore it) with a `volumeMesh` representation, and added to the proposal (persists; needs edit access). Remove Envelopes finds them by `category: context-envelope` via `geometry.getPathsByCategory` and calls `elements.remove` on each. Red is set in the GLB material and also via `elementColors.set` because Forma may drop GLB materials. `GLB_Y_UP` in `envelope.ts` switches the axis conversion
+- `Forma.integrateElements.uploadFile` / `createElementV2` + `Forma.elements.add` — Context Envelope: a stack of height bands is built from the selected buildings' mesh (each band is the convex hull, offset by a margin, of the geometry reaching above its base, so setbacks and lower blocks are followed; roofs under 4 m² or within 1.5 m of each other do not create steps), then encoded as a GLB, uploaded, created as a `virtual: true` element (analyses ignore it) with a `volumeMesh` representation, and added to the proposal (persists; needs edit access). *Remove all* finds them by `category: context-envelope` via `geometry.getPathsByCategory` and calls `elements.remove` on each. Red is set in the GLB material and also via `elementColors.set` because Forma may drop GLB materials. `GLB_Y_UP` in `envelope.ts` switches the axis conversion
 - `Forma.getCanEdit()` — category editing, import and saved-preset editing are hidden for view-only users (they can still apply presets and export)
 
 **Key derived metrics** (computed client-side, no backend):
@@ -83,19 +85,23 @@ Single screen, no routing, no state library, no component folder. Files under `s
 - GFA, site area, coverage and FAR are deliberately not calculated: Forma's Area Metrics panel already provides them
 - Facade orientation = surface normal of each triangle projected onto the XY plane
 
-**State flow**: One `useEffect` fetches building geometry on mount; a second loads categories and assignments from project storage. Category edits update state and save immediately. Colour application ("Apply Colours to All Buildings") colours every building, with no Forma selection needed; when the category being shown is edited after colours were applied, they re-apply automatically. Only category assignment reads the Forma selection (a selected child element counts as its building). `panelColours` (memoised Map of building path → hex for the current colour mode) is passed to `<RenderEngine>` for the *Panel colours* preset.
+**State flow**: One `useEffect` fetches building geometry on mount; a second loads categories and assignments from project storage. Category edits update state and save immediately. *Apply colours* colours every building, with no Forma selection needed; when the category being shown is edited after colours were applied, they re-apply automatically. Only category assignment reads the Forma selection (a selected child element counts as its building). `panelColours` (memoised Map of building path → hex for the current colour mode) is passed to `<RenderEngine>` for the *Panel colours* preset.
 
 **UI structure** (`index.tsx`):
-- `SummaryStrip` — always-visible aggregate stats (building count, avg height, max height, total façade area)
-- `BuildingList` with `SortControls` (each building has a stable `number` in load order, shown as "#3" / "Building 3"), `BuildingDetail` for the clicked building, colour mode buttons (built-in modes plus one per category, ColorMode `category:<id>`), `CategoryPanel` for the active category, context-sensitive legend, colour action buttons, Context Envelope, then `<RenderEngine>`, then Export and Import
+- `SummaryStrip` — always-visible aggregate stats (building count, avg height, max height, total façade area), then a sticky `Tabs` bar. The active tab is remembered per viewer (`preference`)
+- **All three tab panels stay mounted** and inactive ones are `hidden`, so the render keeps its loaded scene; never render a tab's children conditionally (the `panel` suite checks this)
+- Metrics tab: `BuildingList` with a column header and `SortControls` (each building has a stable `number` in load order, shown as "#3" / "Building 3"; rows are keyboard focusable), `BuildingDetail` for the selected building; *Colour buildings* with a *Colour by* select (measured modes, then one option per category, ColorMode `category:<id>`), a `Legend` built from the same colour functions the buildings use, *Apply colours* / *Clear colours*, and *Add a category* in a disclosure; `CategoryPanel` for the active category; Context envelope (editors only)
+- Render tab: `<RenderEngine>` — empty state with *Load scene*, then preview with a toolbar (frame, *Compare with Forma*, *Reload*), Look (presets, saved presets, Lines, Colours, Light and shadow), Sun, Export (Image or Shadow study, each with one primary button) and Scene details
+- Data tab: Export, then Import categories (editors only)
+- UI copy: British English, sentence case for headings and buttons, one primary (filled) button per section, short help text under the control it explains
 - Export: `buildExportRows` → `toCsv` (download via Blob, with a UTF-8 BOM for Excel) or `toTsv` (clipboard, with an `execCommand` fallback because the Clipboard API is often blocked in iframes). The last column, `Forma ID`, is the building path
 - Import (`table.ts`): `decodeText` (UTF-8, falling back to Windows-1252 for Excel's plain CSV) → `parseTable` (comma, semicolon or tab, detected from the header) → `planImport`, which matches rows by `Forma ID`, ignores the measured columns, matches categories and values by name case-insensitively, creates unknown ones, and treats a blank cell as unassigned. `ImportPreview` shows the plan; nothing changes until Apply. The plan is recomputed against current state, and import is hidden for view-only users
 
-## Render (panel engine)
+## Render tab (panel engine)
 
 `RenderEngine.tsx` owns all UI state; `PanelRenderer` owns the three.js scene. Flow: *Load scene* → lazy `import('./panelRender')` → fetch building triangles per path and (optionally) the context mesh → subscribe to the Forma camera → every camera event calls `setView` + `render`. Style edits go through `applyStyle(style, panelColours)`.
 
-Features: presets (Line drawing, Clay, Panel colours, Night, plus saved presets with JSON file export/import); edge line weight 0.05–8 px (number box 0.01–20); silhouettes with their own weight; depth-weighted line width (`DepthLineMaterial`, a patched `LineMaterial` that warns and falls back if the three.js shader text changes); sun and ambient strength; shadows and shadow softness; transparent background with context shown, shadows-only or hidden; Sun section (follow Forma, or a date and time in the project time zone, and *Set Forma's sun to this*); Shadow study (separate images on a labelled sheet, or one layered image coloured by time or accumulated as hours in shadow); *Overlay Forma view*; PNG export 1280–5120 px wide.
+Features: presets (Line drawing, Clay, Panel colours, Night, plus saved presets with JSON file export/import); edge line weight 0.05–8 px (number box 0.01–20); silhouettes with their own weight; depth-weighted line width (`DepthLineMaterial`, a patched `LineMaterial` that warns and falls back if the three.js shader text changes); sun and ambient strength; shadows and shadow softness; transparent background with context shown, shadows-only or hidden; Sun section (follow Forma, or a date and time in the project time zone, and *Set Forma's sun to this*); Shadow study (separate images on a labelled sheet, or one layered image coloured by time or accumulated as hours in shadow); *Compare with Forma*; PNG export 1280–5120 px wide.
 
 ### Decisions and gotchas
 

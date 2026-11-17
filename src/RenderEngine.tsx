@@ -11,8 +11,24 @@ import {
     serialisePresets, toLook, withLook,
 } from './presets';
 import { loadRenderPresets, saveRenderPresets } from './presetStorage';
+import { Field, Segmented, Spinner } from './ui';
 
 type SunMode = 'forma' | 'custom';
+type OutputKind = 'image' | 'study';
+
+/** "21 Jun 2026" for a date in the project time zone. */
+const longDate = (z: { year: number; month: number; day: number }): string =>
+    new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+        .format(new Date(Date.UTC(z.year, z.month - 1, z.day)));
+
+interface SceneInfo {
+    buildingTriangles: number;
+    contextTriangles: number;
+    lineSegments: number;
+    buildingMs: number;
+    contextMs: number;
+    gpu: string;
+}
 /** Black or near-white text, whichever reads better on a sheet of the given background colour. */
 const readableOn = (hex: string): string => {
     const n = parseInt(hex.replace('#', ''), 16);
@@ -59,7 +75,8 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
     const [busy, setBusy] = useState(false);
     const [withContext, setWithContext] = useState(true);
     const [status, setStatus] = useState<string | null>(null);
-    const [info, setInfo] = useState<string | null>(null);
+    const [info, setInfo] = useState<SceneInfo | null>(null);
+    const [outputKind, setOutputKind] = useState<OutputKind>('image');
     const [aspect, setAspect] = useState('16:9');
     const [presetName, setPresetName] = useState('Clay');
 
@@ -204,8 +221,10 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
         e.setSunDirection(sunVector(angles));
         const z = utcToZoned(date, info.zone);
         setSunText(
-            `${isoDate(z)} ${formatClock(z.hour * 60 + z.minute)} (${info.zone}) · azimuth ${angles.azimuth.toFixed(0)}° · `
-            + (angles.elevation > 0 ? `elevation ${angles.elevation.toFixed(1)}°` : 'sun below the horizon'),
+            `${longDate(z)}, ${formatClock(z.hour * 60 + z.minute)} (${info.zone}) · `
+            + (angles.elevation > 0
+                ? `azimuth ${angles.azimuth.toFixed(0)}°, elevation ${angles.elevation.toFixed(1)}°`
+                : 'sun below the horizon'),
         );
         redraw();
     }, [loaded, sunMode, customDate, customMinutes, sunTick]);
@@ -237,14 +256,14 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
 
     const load = async () => {
         setBusy(true);
-        setStatus('Loading three.js…');
+        setStatus('Loading the renderer…');
         try {
             const mod = await import('./panelRender');
             presetsRef.current = mod.PRESETS;
             if (!engine.current) engine.current = new mod.PanelRenderer(canvas.current!);
             const e = engine.current;
 
-            setStatus('Fetching building geometry…');
+            setStatus('Reading buildings from Forma…');
             let t = performance.now();
             const buildings = await Promise.all(buildingPaths.map(async (path) => ({
                 path, position: await Forma.geometry.getTriangles({ path }),
@@ -254,7 +273,7 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
 
             let contextMs = 0;
             if (withContext) {
-                setStatus('Fetching context geometry…');
+                setStatus('Reading terrain and context from Forma…');
                 t = performance.now();
                 e.setContext(await Forma.geometry.getTriangles({ excludedPaths: buildingPaths }));
                 contextMs = Math.round(performance.now() - t);
@@ -276,11 +295,14 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
             const preset = mod.PRESETS[presetName];
             setStyle((current) => current ?? preset); // keep any tweaks when the geometry is reloaded
             setLoaded(true);
-            setInfo(
-                `${e.stats.buildingTriangles.toLocaleString()} building triangles in ${buildingMs} ms · `
-                + `${e.stats.contextTriangles.toLocaleString()} context triangles in ${contextMs} ms · `
-                + `${e.stats.edgeSegments.toLocaleString()} line segments · ${e.gpuInfo()}`,
-            );
+            setInfo({
+                buildingTriangles: e.stats.buildingTriangles,
+                contextTriangles: e.stats.contextTriangles,
+                lineSegments: e.stats.edgeSegments,
+                buildingMs,
+                contextMs,
+                gpu: e.gpuInfo(),
+            });
             setStatus(null);
         } catch (error) {
             console.error(error);
@@ -408,8 +430,7 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
             const angles = times.map((m) => sunAngles(
                 zonedToUtc({ ...day, hour: Math.floor(m / 60), minute: m % 60 }, info.zone), latitude, longitude,
             ));
-            const dateLabel = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
-                .format(new Date(Date.UTC(day.year, day.month - 1, day.day)));
+            const dateLabel = longDate(day);
             const background = current.transparent ? null : current.background;
             const textColour = current.transparent ? current.lineColour : readableOn(current.background);
             let sheet: HTMLCanvasElement;
@@ -486,324 +507,387 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
         }
     };
 
-    return (
-        <div class="section">
-            <h3>Render (panel engine)</h3>
-            <div class="row row--wrap">
-                <label class="muted">
-                    <input type="checkbox" checked={withContext}
-                        onChange={(e) => setWithContext(targetOf(e).checked)} /> Include context (terrain, other elements)
-                </label>
-            </div>
-            <button onClick={load} disabled={disabled || busy || buildingPaths.length === 0}>
-                {busy ? <><span class="spinner">⟳</span> Working…</> : loaded ? 'Reload geometry' : 'Load scene'}
-            </button>
-            <p class="muted">
-                {status ?? 'Draws the scene with our own renderer, following the Forma camera. Reload after the model changes.'}
-            </p>
+    const builtIn = Object.keys(presetsRef.current ?? {});
+    const presetOptions: [string, string][] = [
+        ...builtIn.map((name): [string, string] => [name, name]),
+        ...saved.map((p): [string, string] => [`saved:${p.id}`, p.name]),
+    ];
+    const choosePresetKey = (key: string) => {
+        if (key.startsWith('saved:')) {
+            const preset = saved.find((p) => `saved:${p.id}` === key);
+            if (preset) applyLook(key, preset.look);
+        } else {
+            choosePreset(key);
+        }
+    };
+    const selectValue = (e: Event) => (e.target as HTMLSelectElement).value;
+    const parseClock = (value: string): number | null => {
+        const [h, m] = value.split(':').map(Number);
+        return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
+    };
+    const weightInput = (id: string, label: string, value: number, key: 'lineWeight' | 'silhouetteWeight', disabledFlag = false) => (
+        <input id={id} type="number" min="0.01" max="20" step="0.05" value={value} aria-label={label} disabled={disabledFlag}
+            onInput={(e) => {
+                const v = Number(targetOf(e).value);
+                if (v > 0) patch({ [key]: Math.min(v, 20) });
+            }} />
+    );
+    const quickDates = (onPick: (monthDay: string) => void) => (
+        <div class="segmented segmented--fill segmented--compact" role="group" aria-label="Standard dates">
+            {STUDY_DATES.map(([label, monthDay]) => (
+                <button key={monthDay} type="button" onClick={() => onPick(monthDay)}>{label}</button>
+            ))}
+        </div>
+    );
+    const studySummary = studyLayout === 'layered'
+        ? `One image with the shadows from ${studyCount} times between ${formatClock(studyFrom)} and ${formatClock(studyTo)} layered on the ground. They land on the context if it is shown, otherwise on a flat ground.`
+        : `${studyCount} images from ${formatClock(studyFrom)} to ${formatClock(studyTo)} on one sheet, in the current view and look.`;
 
-            <div ref={host} style={{ position: 'relative', width: '100%', display: loaded ? 'block' : 'none' }}>
-                <canvas ref={canvas} style={{
-                    width: '100%', display: 'block', border: '1px solid var(--border-default)',
-                    background: style?.transparent ? CHECKERBOARD : undefined,
-                }} />
-                <div ref={softHost} style={{ position: 'absolute', inset: '0', pointerEvents: 'none' }} />
+    return (
+        <div class="render">
+            {!loaded && (
+                <div class="section">
+                    <h3>Render</h3>
+                    <div class="empty-state">
+                        <p>
+                            Draw this proposal here with clean lines, light and shadow, following Forma's camera,
+                            then export presentation images and shadow studies.
+                        </p>
+                        <button onClick={load} disabled={disabled || busy || buildingPaths.length === 0}>
+                            {busy ? <><Spinner /> Loading…</> : 'Load scene'}
+                        </button>
+                        <div style={{ marginTop: '0.9em' }}>
+                            <label class="check">
+                                <input type="checkbox" checked={withContext}
+                                    onChange={(e) => setWithContext(targetOf(e).checked)} /> Include terrain and context
+                            </label>
+                        </div>
+                    </div>
+                    {status && <p class="status">{busy && <Spinner />}{status}</p>}
+                </div>
+            )}
+
+            <div class="section" style={{ display: loaded ? 'block' : 'none' }}>
+                <div ref={host} class="preview" style={{ background: style?.transparent ? CHECKERBOARD : undefined }}>
+                    <canvas ref={canvas} />
+                    <div ref={softHost} style={{ position: 'absolute', inset: '0', pointerEvents: 'none' }} />
+                    {overlay && (
+                        <img src={overlay} alt="Forma view for comparison"
+                            style={{ position: 'absolute', inset: '0', width: '100%', height: '100%', opacity: overlayOpacity, pointerEvents: 'none' }} />
+                    )}
+                </div>
+                <div class="toolbar">
+                    <label class="visually-hidden" for="re-aspect">Frame</label>
+                    <select id="re-aspect" value={aspect} onChange={(e) => setAspect(selectValue(e))} title="Frame shape, for the preview and every export">
+                        {Object.keys(ASPECTS).map((a) => <option value={a}>{a}</option>)}
+                    </select>
+                    {overlay
+                        ? <button class="button-ghost" onClick={() => setOverlay(null)}>Hide Forma view</button>
+                        : <button class="button-ghost" onClick={grabOverlay} disabled={busy} title="Lay Forma's own view over the preview to compare">Compare with Forma</button>}
+                    <span class="toolbar__spacer" />
+                    <button class="button-ghost" onClick={load} disabled={disabled || busy} title="Read the geometry again after the model changes">
+                        Reload
+                    </button>
+                </div>
                 {overlay && (
-                    <img src={overlay} alt="Forma view for comparison"
-                        style={{ position: 'absolute', inset: '0', width: '100%', height: '100%', opacity: overlayOpacity, pointerEvents: 'none' }} />
+                    <Field label="Forma view" htmlFor="re-overlay" value={`${Math.round(overlayOpacity * 100)}%`}>
+                        <input id="re-overlay" type="range" min="0" max="1" step="0.05" value={overlayOpacity}
+                            onInput={(e) => setOverlayOpacity(Number(targetOf(e).value))} />
+                    </Field>
                 )}
+                {status && <p class="status" role="status">{busy && <Spinner />}{status}</p>}
             </div>
 
             {loaded && style && (
                 <>
-                    <div class="row row--wrap">
-                        {Object.keys(presetsRef.current ?? {}).map((name) => (
-                            <button class={name === presetName ? '' : 'button-ghost'} onClick={() => choosePreset(name)}>{name}</button>
-                        ))}
-                        {saved.map((p) => (
-                            <button class={presetName === `saved:${p.id}` ? '' : 'button-ghost'}
-                                onClick={() => applyLook(`saved:${p.id}`, p.look)}>{p.name}</button>
-                        ))}
-                    </div>
-                    <details>
-                        <summary class="muted">Saved presets ({saved.length})</summary>
-                        {canEdit && (
-                            <div class="row row--wrap">
-                                <input type="text" value={newPresetName} maxLength={MAX_NAME_LENGTH} placeholder="Name this look"
-                                    aria-label="Name for the new preset"
-                                    onInput={(e) => setNewPresetName(targetOf(e).value)} />
-                                <button onClick={saveCurrentLook}
-                                    disabled={!cleanName(newPresetName) || nameTaken(newPresetName, saved) || saved.length >= MAX_PRESETS}>
-                                    Save current look
-                                </button>
-                            </div>
-                        )}
-                        {canEdit && nameTaken(newPresetName, saved) && cleanName(newPresetName) && (
-                            <p class="muted">That name is already used. Choose another, or use Update on that preset.</p>
-                        )}
-                        {saved.map((p) => (
-                            <div class="row row--wrap">
-                                <span>{p.name}</span>
+                    <div class="section">
+                        <h3>Look</h3>
+                        <Segmented label="Preset" options={presetOptions} value={presetName} onChange={choosePresetKey} />
+
+                        <details class="disclosure">
+                            <summary>Saved presets ({saved.length})</summary>
+                            <p class="help" style={{ marginTop: 0 }}>
+                                A preset keeps the look: colours, lines and light. Background and context are set
+                                when you export. Saved presets are shared with everyone on this Forma project.
+                            </p>
+                            {canEdit && (
+                                <div class="row" style={{ marginTop: '0.6em' }}>
+                                    <input type="text" value={newPresetName} maxLength={MAX_NAME_LENGTH} placeholder="Name this look"
+                                        aria-label="Name for the new preset" style={{ flex: 1 }}
+                                        onInput={(e) => setNewPresetName(targetOf(e).value)}
+                                        onKeyDown={(e) => { if (e.key === 'Enter') saveCurrentLook(); }} />
+                                    <button onClick={saveCurrentLook}
+                                        disabled={!cleanName(newPresetName) || nameTaken(newPresetName, saved) || saved.length >= MAX_PRESETS}>
+                                        Save current look
+                                    </button>
+                                </div>
+                            )}
+                            {canEdit && nameTaken(newPresetName, saved) && cleanName(newPresetName) && (
+                                <p class="help">That name is already used. Choose another, or update that preset.</p>
+                            )}
+                            {saved.map((p) => (
+                                <div class="field" key={p.id}>
+                                    <span class="field__label" style={{ color: 'var(--text-primary)' }}>{p.name}</span>
+                                    <div class="field__control">
+                                        {canEdit && (
+                                            <>
+                                                <button class="button-ghost" onClick={() => updatePreset(p.id)}
+                                                    aria-label={`Update ${p.name} with the current look`}>Update</button>
+                                                <button class="button-ghost" onClick={() => deletePreset(p.id)}
+                                                    aria-label={confirmDelete === p.id ? `Confirm delete ${p.name}` : `Delete ${p.name}`}>
+                                                    {confirmDelete === p.id ? 'Confirm delete' : 'Delete'}
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+                                    <span />
+                                </div>
+                            ))}
+                            <div class="actions">
+                                <button class="button-ghost" onClick={exportPresets} disabled={saved.length === 0}>Export to file</button>
                                 {canEdit && (
                                     <>
-                                        <button class="button-ghost" onClick={() => updatePreset(p.id)}>Update</button>
-                                        <button class="button-ghost" onClick={() => deletePreset(p.id)}>
-                                            {confirmDelete === p.id ? 'Confirm delete' : 'Delete'}
-                                        </button>
+                                        <button class="button-ghost" onClick={() => presetFile.current?.click()}>Import from file…</button>
+                                        <input ref={presetFile} type="file" accept=".json,application/json" style={{ display: 'none' }}
+                                            onChange={importPresets} />
                                     </>
                                 )}
                             </div>
-                        ))}
-                        <div class="row row--wrap">
-                            <button class="button-ghost" onClick={exportPresets} disabled={saved.length === 0}>Export file</button>
-                            {canEdit && (
-                                <>
-                                    <button class="button-ghost" onClick={() => presetFile.current?.click()}>Import file…</button>
-                                    <input ref={presetFile} type="file" accept=".json,application/json" style={{ display: 'none' }}
-                                        onChange={importPresets} />
-                                </>
+                            {presetMessage && <p class="help" role="status">{presetMessage}</p>}
+                        </details>
+
+                        <h4>Lines</h4>
+                        <Field label="Edges" htmlFor="re-weight" value={weightInput('re-weight-px', 'Edge weight in pixels', style.lineWeight, 'lineWeight')}>
+                            <input id="re-weight" type="range" min="0.05" max="8" step="0.05" value={style.lineWeight}
+                                onInput={(e) => patch({ lineWeight: Number(targetOf(e).value) })} />
+                        </Field>
+                        <Field label="Silhouettes" htmlFor="re-silhouette-weight"
+                            value={weightInput('re-silhouette-px', 'Silhouette weight in pixels', style.silhouetteWeight, 'silhouetteWeight', !style.silhouettes)}>
+                            <input id="re-silhouettes" type="checkbox" checked={style.silhouettes} aria-label="Draw silhouettes"
+                                onChange={(e) => patch({ silhouettes: targetOf(e).checked })} />
+                            <input id="re-silhouette-weight" type="range" min="0.05" max="8" step="0.05" value={style.silhouetteWeight}
+                                disabled={!style.silhouettes} style={{ flex: 1, width: 'auto' }}
+                                onInput={(e) => patch({ silhouetteWeight: Number(targetOf(e).value) })} />
+                        </Field>
+                        <Field label="Depth weighting" htmlFor="re-depth" value={`${Math.round(style.depthWeight * 100)}%`}>
+                            <input id="re-depth" type="range" min="0" max="1" step="0.05" value={style.depthWeight}
+                                title="Heavier lines near the camera, lighter far away"
+                                onInput={(e) => patch({ depthWeight: Number(targetOf(e).value) })} />
+                        </Field>
+                        <Field label="Line colour" htmlFor="re-line">
+                            <input id="re-line" type="color" value={style.lineColour} onInput={(e) => patch({ lineColour: targetOf(e).value })} />
+                        </Field>
+
+                        <h4>Colours</h4>
+                        <Field label="Background" htmlFor="re-bg" value={style.transparent ? 'Transparent' : undefined}>
+                            <input id="re-bg" type="color" value={style.background} disabled={style.transparent}
+                                onInput={(e) => patch({ background: targetOf(e).value })} />
+                        </Field>
+                        <Field label="Buildings" htmlFor="re-fill">
+                            <input id="re-fill" type="color" value={style.buildingColour ?? '#cccccc'} disabled={style.buildingColour === null}
+                                onInput={(e) => patch({ buildingColour: targetOf(e).value })} />
+                            <label class="check">
+                                <input type="checkbox" checked={style.buildingColour === null}
+                                    onChange={(e) => patch({ buildingColour: targetOf(e).checked ? null : '#f4f1ea' })} /> Metrics colours
+                            </label>
+                        </Field>
+                        <Field label="Context" htmlFor="re-ctx-colour">
+                            <input id="re-ctx-colour" type="color" value={style.contextColour}
+                                onInput={(e) => patch({ contextColour: targetOf(e).value })} />
+                        </Field>
+
+                        <h4>Light and shadow</h4>
+                        <Field label="Sun" htmlFor="re-sun" value={`${Math.round(style.sunIntensity * 100)}%`}>
+                            <input id="re-sun" type="range" min="0" max="1.5" step="0.05" value={style.sunIntensity}
+                                onInput={(e) => patch({ sunIntensity: Number(targetOf(e).value) })} />
+                        </Field>
+                        <Field label="Ambient" htmlFor="re-amb" value={`${Math.round(style.ambient * 100)}%`}>
+                            <input id="re-amb" type="range" min="0" max="1.5" step="0.05" value={style.ambient}
+                                onInput={(e) => patch({ ambient: Number(targetOf(e).value) })} />
+                        </Field>
+                        <Field label="Shadows" htmlFor="re-shadows">
+                            <input id="re-shadows" type="checkbox" checked={style.shadows}
+                                onChange={(e) => patch({ shadows: targetOf(e).checked })} />
+                        </Field>
+                        <Field label="Softness" htmlFor="re-soft" value={`${style.shadowSoftness.toFixed(1)}°`}>
+                            <input id="re-soft" type="range" min="0" max="10" step="0.1" value={style.shadowSoftness}
+                                disabled={!style.shadows}
+                                onInput={(e) => patch({ shadowSoftness: Number(targetOf(e).value) })} />
+                        </Field>
+                        <p class="help">
+                            {style.shadows && style.shadowSoftness > 0
+                                ? 'Softness is the sun\'s apparent size (the real sun is about 0.5°). The preview sharpens once you stop moving; exports take longer.'
+                                : 'Softness 0 gives hard-edged shadows.'}
+                        </p>
+                    </div>
+
+                    <div class="section">
+                        <div class="section__head">
+                            <h3>Sun</h3>
+                            <button class="button-ghost" onClick={() => readSun()} disabled={busy} title="Read Forma's sun and project location again">
+                                Re-read
+                            </button>
+                        </div>
+                        <Segmented label="Sun position" fill value={sunMode} onChange={chooseSunMode}
+                            options={[['forma', 'Follow Forma'], ['custom', 'Choose a time']]} />
+                        {sunMode === 'custom' && (
+                            <div style={{ marginTop: '0.8em' }}>
+                                <Field label="Date" htmlFor="re-date">
+                                    <input id="re-date" type="date" value={customDate}
+                                        onInput={(e) => { if (parseIsoDate(targetOf(e).value)) setCustomDate(targetOf(e).value); }} />
+                                </Field>
+                                <Field label="">{quickDates(chooseStudyDate)}</Field>
+                                <Field label="Time" htmlFor="re-time" value={formatClock(customMinutes)}>
+                                    <input id="re-time" type="range" min="0" max="1430" step="10" value={customMinutes}
+                                        onInput={(e) => setCustomMinutes(Number(targetOf(e).value))} />
+                                </Field>
+                                <div class="actions">
+                                    <button class="button-ghost" onClick={applyToForma} disabled={busy}>Set Forma's sun to this</button>
+                                </div>
+                            </div>
+                        )}
+                        <p class="help" role="status">{sunText}</p>
+                    </div>
+
+                    <div class="section">
+                        <h3>Export</h3>
+                        <Segmented label="What to export" fill value={outputKind} onChange={setOutputKind}
+                            options={[['image', 'Image'], ['study', 'Shadow study']]} />
+                        <div style={{ marginTop: '0.8em' }}>
+                            <Field label="Width" htmlFor="re-width">
+                                <select id="re-width" value={exportWidth} onChange={(e) => setExportWidth(Number(selectValue(e)))}>
+                                    {[1280, 1920, 2560, 3840, 5120].map((w) => <option value={w}>{w.toLocaleString('en-GB')} px</option>)}
+                                </select>
+                            </Field>
+                            <Field label="Background">
+                                <label class="check">
+                                    <input type="checkbox" checked={style.transparent}
+                                        onChange={(e) => {
+                                            const on = targetOf(e).checked;
+                                            // A see-through export is rarely wanted with an opaque ground, so switch to shadows only.
+                                            patch(on && style.contextMode === 'shown'
+                                                ? { transparent: true, contextMode: 'shadows' } : { transparent: on });
+                                        }} /> Transparent
+                                </label>
+                            </Field>
+                            <Field label="Context" htmlFor="re-context">
+                                <select id="re-context" value={style.contextMode}
+                                    onChange={(e) => patch({ contextMode: selectValue(e) as ContextMode })}>
+                                    <option value="shown">Shown</option>
+                                    <option value="shadows">Shadows only</option>
+                                    <option value="hidden">Hidden</option>
+                                </select>
+                            </Field>
+                            {style.contextMode === 'shadows' && outputKind === 'image' && (
+                                <Field label="Shadow strength" htmlFor="re-shadow" value={`${Math.round(style.shadowOpacity * 100)}%`}>
+                                    <input id="re-shadow" type="range" min="0.05" max="1" step="0.05" value={style.shadowOpacity}
+                                        onInput={(e) => patch({ shadowOpacity: Number(targetOf(e).value) })} />
+                                </Field>
                             )}
                         </div>
-                        <p class="muted">
-                            {presetMessage ?? 'A preset saves the look: colours, lines and light. Transparency and context are set per export. Presets are shared with everyone on this Forma project; export a file to use one in another project.'}
-                        </p>
+
+                        {outputKind === 'image' && (
+                            <>
+                                {style.contextMode === 'shadows' && !style.shadows && (
+                                    <p class="help">Shadows are off under Look, so a shadows-only context will be empty.</p>
+                                )}
+                                <div class="actions">
+                                    <button onClick={download} disabled={busy}>Download PNG</button>
+                                </div>
+                            </>
+                        )}
+
+                        {outputKind === 'study' && (
+                            <>
+                                <h4>Times</h4>
+                                <Field label="Date" htmlFor="re-sdate">
+                                    <input id="re-sdate" type="date" value={studyDate}
+                                        onInput={(e) => { if (parseIsoDate(targetOf(e).value)) setStudyDate(targetOf(e).value); }} />
+                                </Field>
+                                <Field label="">{quickDates((monthDay) => setStudyDate(`${studyDate.slice(0, 4)}-${monthDay}`))}</Field>
+                                <Field label="From" htmlFor="re-sfrom">
+                                    <input id="re-sfrom" type="time" step="300" value={formatClock(studyFrom)}
+                                        onInput={(e) => { const m = parseClock(targetOf(e).value); if (m !== null) setStudyFrom(m); }} />
+                                </Field>
+                                <Field label="To" htmlFor="re-sto">
+                                    <input id="re-sto" type="time" step="300" value={formatClock(studyTo)}
+                                        onInput={(e) => { const m = parseClock(targetOf(e).value); if (m !== null) setStudyTo(m); }} />
+                                </Field>
+                                <Field label="Times" htmlFor="re-scount">
+                                    <select id="re-scount" value={studyCount} onChange={(e) => setStudyCount(Number(selectValue(e)))}>
+                                        {[2, 3, 4, 5, 6, 8, 9, 12].map((n) => <option value={n}>{n}</option>)}
+                                    </select>
+                                </Field>
+
+                                <h4>Layout</h4>
+                                <Segmented label="Layout" fill value={studyLayout} onChange={setStudyLayout}
+                                    options={[['separate', 'Separate images'], ['layered', 'One layered image']]} />
+                                <div style={{ marginTop: '0.8em' }}>
+                                    {studyLayout === 'separate' && (
+                                        <Field label="Columns" htmlFor="re-scols">
+                                            <select id="re-scols" value={studyColumns} onChange={(e) => setStudyColumns(Number(selectValue(e)))}>
+                                                {[1, 2, 3, 4].map((n) => <option value={n}>{n}</option>)}
+                                            </select>
+                                            <label class="check">
+                                                <input type="checkbox" checked={studyLabels} onChange={(e) => setStudyLabels(targetOf(e).checked)} /> Labels
+                                            </label>
+                                        </Field>
+                                    )}
+                                    {studyLayout === 'layered' && (
+                                        <>
+                                            <Field label="Colour" htmlFor="re-lmode">
+                                                <select id="re-lmode" value={layerMode} onChange={(e) => setLayerMode(selectValue(e) as LayerMode)}>
+                                                    <option value="time">By time of day</option>
+                                                    <option value="accumulate">Darker = more hours</option>
+                                                </select>
+                                            </Field>
+                                            <Field label={layerMode === 'time' ? 'Shadow opacity' : 'Darkest ground'} htmlFor="re-lopacity"
+                                                value={`${Math.round(style.shadowOpacity * 100)}%`}>
+                                                <input id="re-lopacity" type="range" min="0.1" max="0.95" step="0.05" value={style.shadowOpacity}
+                                                    onInput={(e) => patch({ shadowOpacity: Number(targetOf(e).value) })} />
+                                            </Field>
+                                        </>
+                                    )}
+                                </div>
+                                <p class="help">
+                                    {studyLayout === 'separate' && !style.shadows
+                                        ? 'Shadows are off under Look, so the images will not show any.'
+                                        : `${studySummary}${style.shadows && style.shadowSoftness > 0 ? ' Soft shadows make this slower.' : ''}`}
+                                </p>
+                                <div class="actions">
+                                    <button onClick={createStudy} disabled={busy || !formaSun.current?.location}>
+                                        {studyLayout === 'layered' ? 'Create layered image' : 'Create shadow study'}
+                                    </button>
+                                    {study && (
+                                        <button class="button-ghost" onClick={() => {
+                                            const link = document.createElement('a');
+                                            link.href = study.url;
+                                            link.download = study.name;
+                                            link.click();
+                                        }}>Download PNG</button>
+                                    )}
+                                </div>
+                                {!formaSun.current?.location && <p class="help">The project has no location, so a shadow study is not possible.</p>}
+                                {study && <img class="result-image" src={study.url} alt="Shadow study" />}
+                            </>
+                        )}
+                    </div>
+
+                    <details class="disclosure" style={{ margin: '0 0 0.8em', padding: '0 0.2em' }}>
+                        <summary>Scene details</summary>
+                        <label class="check" style={{ margin: '0.4em 0 0.8em' }}>
+                            <input type="checkbox" checked={withContext}
+                                onChange={(e) => setWithContext(targetOf(e).checked)} /> Include terrain and context (applies on Reload)
+                        </label>
+                        {info && (
+                            <dl class="facts">
+                                <dt>Buildings</dt><dd>{info.buildingTriangles.toLocaleString('en-GB')} triangles, read in {info.buildingMs} ms</dd>
+                                <dt>Context</dt><dd>{info.contextTriangles.toLocaleString('en-GB')} triangles, read in {info.contextMs} ms</dd>
+                                <dt>Lines</dt><dd>{info.lineSegments.toLocaleString('en-GB')} edge segments</dd>
+                                <dt>Graphics</dt><dd>{info.gpu}</dd>
+                            </dl>
+                        )}
                     </details>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-weight">Edge lines (px)</label>
-                        <input id="re-weight" type="range" min="0.05" max="8" step="0.05" value={style.lineWeight}
-                            onInput={(e) => patch({ lineWeight: Number(targetOf(e).value) })} />
-                        <input type="number" min="0.01" max="20" step="0.05" value={style.lineWeight} style={{ width: '6em' }}
-                            onInput={(e) => {
-                                const v = Number(targetOf(e).value);
-                                if (v > 0) patch({ lineWeight: Math.min(v, 20) });
-                            }} />
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted">
-                            <input type="checkbox" checked={style.silhouettes}
-                                onChange={(e) => patch({ silhouettes: targetOf(e).checked })} /> Silhouettes
-                        </label>
-                        <input type="range" min="0.05" max="8" step="0.05" value={style.silhouetteWeight}
-                            disabled={!style.silhouettes} aria-label="Silhouette weight"
-                            onInput={(e) => patch({ silhouetteWeight: Number(targetOf(e).value) })} />
-                        <input type="number" min="0.01" max="20" step="0.05" value={style.silhouetteWeight} style={{ width: '6em' }}
-                            disabled={!style.silhouettes} aria-label="Silhouette weight in pixels"
-                            onInput={(e) => {
-                                const v = Number(targetOf(e).value);
-                                if (v > 0) patch({ silhouetteWeight: Math.min(v, 20) });
-                            }} />
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-depth">Depth weighting {Math.round(style.depthWeight * 100)}%</label>
-                        <input id="re-depth" type="range" min="0" max="1" step="0.05" value={style.depthWeight}
-                            onInput={(e) => patch({ depthWeight: Number(targetOf(e).value) })} />
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-line">Line</label>
-                        <input id="re-line" type="color" value={style.lineColour} onInput={(e) => patch({ lineColour: targetOf(e).value })} />
-                        <label class="muted" for="re-bg">Background</label>
-                        <input id="re-bg" type="color" value={style.background} disabled={style.transparent}
-                            onInput={(e) => patch({ background: targetOf(e).value })} />
-                        <label class="muted" for="re-fill">Buildings</label>
-                        <input id="re-fill" type="color" value={style.buildingColour ?? '#cccccc'}
-                            onInput={(e) => patch({ buildingColour: targetOf(e).value })} />
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-sun">Sun {Math.round(style.sunIntensity * 100)}%</label>
-                        <input id="re-sun" type="range" min="0" max="1.5" step="0.05" value={style.sunIntensity}
-                            onInput={(e) => patch({ sunIntensity: Number(targetOf(e).value) })} />
-                        <label class="muted" for="re-amb">Ambient {Math.round(style.ambient * 100)}%</label>
-                        <input id="re-amb" type="range" min="0" max="1.5" step="0.05" value={style.ambient}
-                            onInput={(e) => patch({ ambient: Number(targetOf(e).value) })} />
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted">
-                            <input type="checkbox" checked={style.shadows} onChange={(e) => patch({ shadows: targetOf(e).checked })} /> Shadows
-                        </label>
-                        <select value={aspect} onChange={(e) => setAspect((e.target as unknown as HTMLSelectElement).value)}>
-                            {Object.keys(ASPECTS).map((a) => <option value={a}>{a}</option>)}
-                        </select>
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-soft">Shadow softness {style.shadowSoftness.toFixed(1)}°</label>
-                        <input id="re-soft" type="range" min="0" max="10" step="0.1" value={style.shadowSoftness}
-                            disabled={!style.shadows}
-                            onInput={(e) => patch({ shadowSoftness: Number(targetOf(e).value) })} />
-                    </div>
-                    {style.shadows && style.shadowSoftness > 0 && (
-                        <p class="muted">
-                            The sun's apparent size: 0 gives hard edges, the real sun is about 0.5°. Shadows soften with distance
-                            from what casts them. The preview sharpens after you stop moving; exports take longer.
-                        </p>
-                    )}
-                    <div class="row row--wrap">
-                        <label class="muted">
-                            <input type="checkbox" checked={style.transparent}
-                                onChange={(e) => {
-                                    const on = targetOf(e).checked;
-                                    // A see-through export is rarely wanted with an opaque ground, so switch to shadows only.
-                                    patch(on && style.contextMode === 'shown'
-                                        ? { transparent: true, contextMode: 'shadows' } : { transparent: on });
-                                }} /> Transparent background
-                        </label>
-                        <label class="muted" for="re-context">Context</label>
-                        <select id="re-context" value={style.contextMode}
-                            onChange={(e) => patch({ contextMode: (e.target as unknown as HTMLSelectElement).value as ContextMode })}>
-                            <option value="shown">Shown</option>
-                            <option value="shadows">Shadows only</option>
-                            <option value="hidden">Hidden</option>
-                        </select>
-                    </div>
-                    {style.contextMode === 'shadows' && (
-                        <div class="row row--wrap">
-                            <label class="muted" for="re-shadow">Shadow strength {Math.round(style.shadowOpacity * 100)}%</label>
-                            <input id="re-shadow" type="range" min="0.05" max="1" step="0.05" value={style.shadowOpacity}
-                                onInput={(e) => patch({ shadowOpacity: Number(targetOf(e).value) })} />
-                            {!style.shadows && <span class="muted">Switch Shadows on to see them.</span>}
-                        </div>
-                    )}
-
-                    <h3>Sun</h3>
-                    <div class="row row--wrap">
-                        <select value={sunMode} aria-label="Sun source"
-                            onChange={(e) => chooseSunMode((e.target as unknown as HTMLSelectElement).value as SunMode)}>
-                            <option value="forma">Follow Forma</option>
-                            <option value="custom">Choose date and time</option>
-                        </select>
-                        <button class="button-ghost" onClick={() => readSun()} disabled={busy}>Re-read sun</button>
-                    </div>
-                    {sunMode === 'custom' && (
-                        <>
-                            <div class="row row--wrap">
-                                <label class="muted" for="re-date">Date</label>
-                                <input id="re-date" type="date" value={customDate}
-                                    onInput={(e) => { if (parseIsoDate(targetOf(e).value)) setCustomDate(targetOf(e).value); }} />
-                                {STUDY_DATES.map(([label, monthDay]) => (
-                                    <button class="button-ghost" onClick={() => chooseStudyDate(monthDay)}>{label}</button>
-                                ))}
-                            </div>
-                            <div class="row row--wrap">
-                                <label class="muted" for="re-time">Time {formatClock(customMinutes)}</label>
-                                <input id="re-time" type="range" min="0" max="1430" step="10" value={customMinutes}
-                                    onInput={(e) => setCustomMinutes(Number(targetOf(e).value))} />
-                            </div>
-                            <div class="row row--wrap">
-                                <button class="button-ghost" onClick={applyToForma} disabled={busy}>Set Forma's sun to this</button>
-                            </div>
-                        </>
-                    )}
-                    <p class="muted">{sunText}</p>
-
-                    <h3>Shadow study</h3>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-sdate">Date</label>
-                        <input id="re-sdate" type="date" value={studyDate}
-                            onInput={(e) => { if (parseIsoDate(targetOf(e).value)) setStudyDate(targetOf(e).value); }} />
-                        {STUDY_DATES.map(([label, monthDay]) => (
-                            <button class="button-ghost" onClick={() => setStudyDate(`${studyDate.slice(0, 4)}-${monthDay}`)}>{label}</button>
-                        ))}
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-sfrom">From</label>
-                        <input id="re-sfrom" type="time" step="300" value={formatClock(studyFrom)}
-                            onInput={(e) => {
-                                const [h, m] = targetOf(e).value.split(':').map(Number);
-                                if (Number.isFinite(h) && Number.isFinite(m)) setStudyFrom(h * 60 + m);
-                            }} />
-                        <label class="muted" for="re-sto">to</label>
-                        <input id="re-sto" type="time" step="300" value={formatClock(studyTo)}
-                            onInput={(e) => {
-                                const [h, m] = targetOf(e).value.split(':').map(Number);
-                                if (Number.isFinite(h) && Number.isFinite(m)) setStudyTo(h * 60 + m);
-                            }} />
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-scount">Images</label>
-                        <select id="re-scount" value={studyCount}
-                            onChange={(e) => setStudyCount(Number((e.target as unknown as HTMLSelectElement).value))}>
-                            {[2, 3, 4, 5, 6, 8, 9, 12].map((n) => <option value={n}>{n}</option>)}
-                        </select>
-                        {studyLayout === 'separate' && (
-                            <>
-                                <label class="muted" for="re-scols">Columns</label>
-                                <select id="re-scols" value={studyColumns}
-                                    onChange={(e) => setStudyColumns(Number((e.target as unknown as HTMLSelectElement).value))}>
-                                    {[1, 2, 3, 4].map((n) => <option value={n}>{n}</option>)}
-                                </select>
-                                <label class="muted">
-                                    <input type="checkbox" checked={studyLabels} onChange={(e) => setStudyLabels(targetOf(e).checked)} /> Labels
-                                </label>
-                            </>
-                        )}
-                    </div>
-                    <div class="row row--wrap">
-                        <label class="muted" for="re-slayout">Layout</label>
-                        <select id="re-slayout" value={studyLayout}
-                            onChange={(e) => setStudyLayout((e.target as unknown as HTMLSelectElement).value as 'separate' | 'layered')}>
-                            <option value="separate">Separate images</option>
-                            <option value="layered">One layered image</option>
-                        </select>
-                        {studyLayout === 'layered' && (
-                            <>
-                                <label class="muted" for="re-lmode">Colour</label>
-                                <select id="re-lmode" value={layerMode}
-                                    onChange={(e) => setLayerMode((e.target as unknown as HTMLSelectElement).value as LayerMode)}>
-                                    <option value="time">By time of day</option>
-                                    <option value="accumulate">Darker = more hours</option>
-                                </select>
-                            </>
-                        )}
-                    </div>
-                    {studyLayout === 'layered' && (
-                        <div class="row row--wrap">
-                            <label class="muted" for="re-lopacity">
-                                {layerMode === 'time' ? 'Shadow opacity' : 'Darkest ground'} {Math.round(style.shadowOpacity * 100)}%
-                            </label>
-                            <input id="re-lopacity" type="range" min="0.1" max="0.95" step="0.05" value={style.shadowOpacity}
-                                onInput={(e) => patch({ shadowOpacity: Number(targetOf(e).value) })} />
-                        </div>
-                    )}
-                    <div class="row row--wrap">
-                        <button onClick={createStudy} disabled={busy || !formaSun.current?.location}>
-                            {studyLayout === 'layered' ? 'Create layered image' : 'Create shadow study'}
-                        </button>
-                        {study && (
-                            <button class="button-ghost" onClick={() => {
-                                const link = document.createElement('a');
-                                link.href = study.url;
-                                link.download = study.name;
-                                link.click();
-                            }}>Download PNG</button>
-                        )}
-                    </div>
-                    <p class="muted">
-                        {studyLayout === 'layered'
-                            ? `One image: the shadows from ${studyCount} times between ${formatClock(studyFrom)} and ${formatClock(studyTo)} layered on the ground, ${exportWidth}px wide. Shadows land on the context if it is shown, otherwise on a flat ground.${style.shadowSoftness > 0 ? ' Soft shadows make this slower.' : ''}`
-                            : style.shadows
-                            ? `${studyCount} renders from ${formatClock(studyFrom)} to ${formatClock(studyTo)} on one sheet, ${exportWidth}px wide, using the current view, look and project time zone.${style.shadowSoftness > 0 ? ' Soft shadows make this slower.' : ''}`
-                            : 'Switch Shadows on first, otherwise the images will not show any.'}
-                    </p>
-                    {study && <img src={study.url} alt="Shadow study" style={{ width: '100%', display: 'block', border: '1px solid var(--border-default)' }} />}
-
-                    <h3>Compare with Forma</h3>
-                    <div class="row row--wrap">
-                        <button class="button-ghost" onClick={grabOverlay} disabled={busy}>Overlay Forma view</button>
-                        {overlay && (
-                            <>
-                                <input type="range" min="0" max="1" step="0.05" value={overlayOpacity}
-                                    onInput={(e) => setOverlayOpacity(Number(targetOf(e).value))} />
-                                <button class="button-ghost" onClick={() => setOverlay(null)}>Remove</button>
-                            </>
-                        )}
-                    </div>
-
-                    <div class="row row--wrap">
-                        <select value={exportWidth} onChange={(e) => setExportWidth(Number((e.target as unknown as HTMLSelectElement).value))}>
-                            {[1280, 1920, 2560, 3840, 5120].map((w) => <option value={w}>{w}px wide</option>)}
-                        </select>
-                        <button onClick={download} disabled={busy}>Download PNG</button>
-                    </div>
-                    <p class="muted">{info}</p>
                 </>
             )}
         </div>
