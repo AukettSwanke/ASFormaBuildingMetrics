@@ -215,9 +215,14 @@ export function RenderEngine({ buildingPaths, panelColours, disabled }: {
                         ))}
                     </div>
                     <div class="row row--wrap">
-                        <label class="muted" for="re-weight">Line weight {style.lineWeight}px</label>
-                        <input id="re-weight" type="range" min="0.5" max="8" step="0.5" value={style.lineWeight}
+                        <label class="muted" for="re-weight">Line weight (px)</label>
+                        <input id="re-weight" type="range" min="0.05" max="8" step="0.05" value={style.lineWeight}
                             onInput={(e) => patch({ lineWeight: Number(targetOf(e).value) })} />
+                        <input type="number" min="0.01" max="20" step="0.05" value={style.lineWeight} style={{ width: '6em' }}
+                            onInput={(e) => {
+                                const v = Number(targetOf(e).value);
+                                if (v > 0) patch({ lineWeight: Math.min(v, 20) });
+                            }} />
                     </div>
                     <div class="row row--wrap">
                         <label class="muted" for="re-line">Line</label>

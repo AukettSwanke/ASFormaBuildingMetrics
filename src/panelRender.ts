@@ -69,7 +69,7 @@ export class PanelRenderer {
     private ortho = new OrthographicCamera(-1, 1, 1, -1, 1, 10000);
     private ambientLight = new AmbientLight(0xffffff, 1);
     private sunLight = new DirectionalLight(0xffffff, 1);
-    private lineMaterial = new LineMaterial({ color: 0x111111, linewidth: 2 });
+    private lineMaterial = new LineMaterial({ color: 0x111111, linewidth: 2, alphaToCoverage: true });
     private buildingMeshes = new Map<string, Mesh>();
     private contextMesh: Mesh | null = null;
     private lines: LineSegments2 | null = null;
