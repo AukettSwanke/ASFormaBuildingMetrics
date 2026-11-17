@@ -4,6 +4,7 @@ import type { ContextMode, PanelRenderer, RenderStyle } from './panelRender';
 import { sunAngles, sunVector } from './sunPosition';
 import { fallbackZone, formatClock, isoDate, parseIsoDate, utcToZoned, zonedToUtc } from './timeZone';
 import { composeSheet, planSheet, studyTimes } from './studySheet';
+import { LayerMode, composeLayered, planLayered } from './layeredShadows';
 import { newId } from './categories';
 import {
     LookStyle, MAX_NAME_LENGTH, MAX_PRESETS, SavedPreset, cleanName, mergeImported, nameTaken, parsePresetFile,
@@ -93,6 +94,9 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
     const [studyCount, setStudyCount] = useState(3);
     const [studyColumns, setStudyColumns] = useState(3);
     const [studyLabels, setStudyLabels] = useState(true);
+    /** Separate images on a sheet, or all the times layered into one image. */
+    const [studyLayout, setStudyLayout] = useState<'separate' | 'layered'>('separate');
+    const [layerMode, setLayerMode] = useState<LayerMode>('time');
     const [study, setStudy] = useState<{ url: string; name: string } | null>(null);
     const studySeeded = useRef(false);
     const studyUrl = useRef<string | null>(null);
@@ -403,29 +407,55 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
             const angles = times.map((m) => sunAngles(
                 zonedToUtc({ ...day, hour: Math.floor(m / 60), minute: m % 60 }, info.zone), latitude, longitude,
             ));
-            const plan = planSheet(exportWidth, studyColumns, times.length, e.aspect, studyLabels, true);
-            const frames = e.captureSequence(plan.tileWidth, times.length, (i) => e.setSunDirection(sunVector(angles[i])));
-            const tiles = frames.map((canvas, i) => ({
-                canvas,
-                time: formatClock(times[i]),
-                detail: angles[i].elevation > 0
-                    ? `azimuth ${angles[i].azimuth.toFixed(0)}° · elevation ${angles[i].elevation.toFixed(0)}°`
-                    : 'sun below the horizon',
-            }));
             const dateLabel = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
                 .format(new Date(Date.UTC(day.year, day.month - 1, day.day)));
-            const sheet = composeSheet(tiles, plan, {
-                title: `Shadow study · ${dateLabel} · ${info.zone}`,
-                labels: studyLabels,
-                background: current.transparent ? null : current.background,
-                textColour: current.transparent ? current.lineColour : readableOn(current.background),
-            });
+            const background = current.transparent ? null : current.background;
+            const textColour = current.transparent ? current.lineColour : readableOn(current.background);
+            let sheet: HTMLCanvasElement;
+            let note: string | null = null;
+            if (studyLayout === 'layered') {
+                // Only times with the sun up cast a shadow, so the others are left out.
+                const up = times.map((_, i) => i).filter((i) => angles[i].elevation > 0);
+                if (up.length === 0) throw new Error('The sun is below the horizon at every chosen time.');
+                if (up.length < times.length) note = `${times.length - up.length} time(s) with the sun below the horizon were left out.`;
+                const plan = planLayered(exportWidth, e.aspect, true, up.length, layerMode);
+                const reference = Math.floor((up.length - 1) / 2); // the buildings are lit as at the middle time
+                const { base, masks } = e.captureShadowLayers(
+                    plan.imageWidth, up.length, (i) => e.setSunDirection(sunVector(angles[up[i]])), reference,
+                );
+                sheet = composeLayered(base, masks, plan, {
+                    mode: layerMode,
+                    opacity: current.shadowOpacity,
+                    times: up.map((i) => formatClock(times[i])),
+                    background,
+                    textColour,
+                    title: `Layered shadows · ${dateLabel} · ${info.zone}`,
+                    accumulateColour: '#101418',
+                });
+            } else {
+                const plan = planSheet(exportWidth, studyColumns, times.length, e.aspect, studyLabels, true);
+                const frames = e.captureSequence(plan.tileWidth, times.length, (i) => e.setSunDirection(sunVector(angles[i])));
+                const tiles = frames.map((canvas, i) => ({
+                    canvas,
+                    time: formatClock(times[i]),
+                    detail: angles[i].elevation > 0
+                        ? `azimuth ${angles[i].azimuth.toFixed(0)}° · elevation ${angles[i].elevation.toFixed(0)}°`
+                        : 'sun below the horizon',
+                }));
+                sheet = composeSheet(tiles, plan, {
+                    title: `Shadow study · ${dateLabel} · ${info.zone}`,
+                    labels: studyLabels,
+                    background,
+                    textColour,
+                });
+            }
             const blob = await new Promise<Blob>((resolve, reject) =>
                 sheet.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG export failed'))), 'image/png'));
             if (studyUrl.current) URL.revokeObjectURL(studyUrl.current);
             studyUrl.current = URL.createObjectURL(blob);
-            setStudy({ url: studyUrl.current, name: `forma-shadow-study-${studyDate}${current.transparent ? '-transparent' : ''}.png` });
-            setStatus(null);
+            const kind = studyLayout === 'layered' ? 'shadow-layers' : 'shadow-study';
+            setStudy({ url: studyUrl.current, name: `forma-${kind}-${studyDate}${current.transparent ? '-transparent' : ''}.png` });
+            setStatus(note);
         } catch (error) {
             console.error(error);
             setStatus(`Shadow study failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -692,17 +722,50 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
                             onChange={(e) => setStudyCount(Number((e.target as unknown as HTMLSelectElement).value))}>
                             {[2, 3, 4, 5, 6, 8, 9, 12].map((n) => <option value={n}>{n}</option>)}
                         </select>
-                        <label class="muted" for="re-scols">Columns</label>
-                        <select id="re-scols" value={studyColumns}
-                            onChange={(e) => setStudyColumns(Number((e.target as unknown as HTMLSelectElement).value))}>
-                            {[1, 2, 3, 4].map((n) => <option value={n}>{n}</option>)}
-                        </select>
-                        <label class="muted">
-                            <input type="checkbox" checked={studyLabels} onChange={(e) => setStudyLabels(targetOf(e).checked)} /> Labels
-                        </label>
+                        {studyLayout === 'separate' && (
+                            <>
+                                <label class="muted" for="re-scols">Columns</label>
+                                <select id="re-scols" value={studyColumns}
+                                    onChange={(e) => setStudyColumns(Number((e.target as unknown as HTMLSelectElement).value))}>
+                                    {[1, 2, 3, 4].map((n) => <option value={n}>{n}</option>)}
+                                </select>
+                                <label class="muted">
+                                    <input type="checkbox" checked={studyLabels} onChange={(e) => setStudyLabels(targetOf(e).checked)} /> Labels
+                                </label>
+                            </>
+                        )}
                     </div>
                     <div class="row row--wrap">
-                        <button onClick={createStudy} disabled={busy || !formaSun.current?.location}>Create shadow study</button>
+                        <label class="muted" for="re-slayout">Layout</label>
+                        <select id="re-slayout" value={studyLayout}
+                            onChange={(e) => setStudyLayout((e.target as unknown as HTMLSelectElement).value as 'separate' | 'layered')}>
+                            <option value="separate">Separate images</option>
+                            <option value="layered">One layered image</option>
+                        </select>
+                        {studyLayout === 'layered' && (
+                            <>
+                                <label class="muted" for="re-lmode">Colour</label>
+                                <select id="re-lmode" value={layerMode}
+                                    onChange={(e) => setLayerMode((e.target as unknown as HTMLSelectElement).value as LayerMode)}>
+                                    <option value="time">By time of day</option>
+                                    <option value="accumulate">Darker = more hours</option>
+                                </select>
+                            </>
+                        )}
+                    </div>
+                    {studyLayout === 'layered' && (
+                        <div class="row row--wrap">
+                            <label class="muted" for="re-lopacity">
+                                {layerMode === 'time' ? 'Shadow opacity' : 'Darkest ground'} {Math.round(style.shadowOpacity * 100)}%
+                            </label>
+                            <input id="re-lopacity" type="range" min="0.1" max="0.95" step="0.05" value={style.shadowOpacity}
+                                onInput={(e) => patch({ shadowOpacity: Number(targetOf(e).value) })} />
+                        </div>
+                    )}
+                    <div class="row row--wrap">
+                        <button onClick={createStudy} disabled={busy || !formaSun.current?.location}>
+                            {studyLayout === 'layered' ? 'Create layered image' : 'Create shadow study'}
+                        </button>
                         {study && (
                             <button class="button-ghost" onClick={() => {
                                 const link = document.createElement('a');
@@ -713,7 +776,9 @@ export function RenderEngine({ buildingPaths, panelColours, canEdit, disabled }:
                         )}
                     </div>
                     <p class="muted">
-                        {style.shadows
+                        {studyLayout === 'layered'
+                            ? `One image: the shadows from ${studyCount} times between ${formatClock(studyFrom)} and ${formatClock(studyTo)} layered on the ground, ${exportWidth}px wide. Shadows land on the context if it is shown, otherwise on a flat ground.${style.shadowSoftness > 0 ? ' Soft shadows make this slower.' : ''}`
+                            : style.shadows
                             ? `${studyCount} renders from ${formatClock(studyFrom)} to ${formatClock(studyTo)} on one sheet, ${exportWidth}px wide, using the current view, look and project time zone.${style.shadowSoftness > 0 ? ' Soft shadows make this slower.' : ''}`
                             : 'Switch Shadows on first, otherwise the images will not show any.'}
                     </p>

@@ -5,7 +5,7 @@
 
 import {
     AmbientLight, Box3, BufferAttribute, BufferGeometry, Color, DirectionalLight,
-    Mesh, MeshLambertMaterial, OrthographicCamera, PCFShadowMap, PerspectiveCamera, Scene,
+    Mesh, MeshLambertMaterial, OrthographicCamera, PCFShadowMap, PerspectiveCamera, PlaneGeometry, Scene,
     ShadowMaterial, Sphere, Vector3, Vector4, WebGLRenderer,
 } from 'three';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
@@ -135,6 +135,17 @@ export class PanelRenderer {
     private contextMesh: Mesh | null = null;
     /** The context uses one of these two materials depending on `contextMode`; both are owned here. */
     private contextLambert: MeshLambertMaterial | null = null;
+    /**
+     * Layered-shadow rendering. In a mask pass only the shadows falling on the ground are drawn (buildings
+     * stay in as invisible depth blockers); `noShadows` draws the plain scene with no shadows at all.
+     */
+    private maskPass = false;
+    private noShadows = false;
+    private maskMaterial = new ShadowMaterial({
+        opacity: 1, transparent: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+    });
+    /** A flat ground used for the mask pass when there is no context mesh to catch shadows. */
+    private catcher: Mesh | null = null;
     private shadowMaterial = new ShadowMaterial({
         opacity: 0.35, transparent: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
     });
@@ -319,7 +330,7 @@ export class PanelRenderer {
 
     private updateSunLight(): void {
         this.sunLight.intensity = this.style.sunIntensity * this.sunFade * LIGHT_SCALE;
-        this.sunLight.castShadow = this.style.shadows && this.sunFade > 0;
+        this.sunLight.castShadow = !this.noShadows && (this.maskPass || this.style.shadows) && this.sunFade > 0;
     }
 
     /** Sun elevation in degrees implied by the current direction. */
@@ -327,14 +338,57 @@ export class PanelRenderer {
         return (Math.asin(Math.max(-1, Math.min(1, this.sunDir.z))) * 180) / Math.PI;
     }
 
+    /** Longest shadow worth drawing, in metres. Low sun throws very long shadows; past this they are cut off. */
+    private shadowCap(): number {
+        return Math.min(Math.max(this.buildingSphere.radius * 12, 300), 1500);
+    }
+
+    /**
+     * Points the sun at the scene and fits its shadow camera around the buildings *and* the ground their
+     * shadows reach. Fitting to the buildings alone clips every shadow that runs further than that, which
+     * is nearly all of them at low sun.
+     */
     private updateSunShadow(): void {
         const centre = this.bounds.getCenter(new Vector3());
-        const r = Math.max(this.bounds.getBoundingSphere(new Sphere()).radius, 10);
+        const r = Math.max(this.buildingSphere.radius, 10);
+        const position = centre.clone().addScaledVector(this.lightDir, r * 3);
         this.sunLight.target.position.copy(centre);
-        this.sunLight.position.copy(centre).addScaledVector(this.lightDir, r * 3);
+        this.sunLight.position.copy(position);
+
+        // A camera standing where the shadow camera stands, to measure everything in the light's own view.
         const cam = this.sunLight.shadow.camera;
-        cam.left = -r; cam.right = r; cam.top = r; cam.bottom = -r;
-        cam.near = r * 0.5; cam.far = r * 6;
+        const view = new OrthographicCamera();
+        view.position.copy(position);
+        view.up.copy(cam.up);
+        view.lookAt(centre);
+        view.updateMatrixWorld();
+        const inverse = view.matrixWorldInverse.copy(view.matrixWorld).invert();
+
+        const { min, max } = this.bounds;
+        const groundZ = min.z;
+        const cap = this.shadowCap();
+        const dir = this.lightDir;
+        const points: Vector3[] = [];
+        for (const x of [min.x, max.x]) for (const y of [min.y, max.y]) for (const z of [min.z, max.z]) {
+            const corner = new Vector3(x, y, z);
+            points.push(corner);
+            // Where this corner's shadow lands on the ground, no further than the cap.
+            const along = dir.z > 0.02 ? Math.min((z - groundZ) / dir.z, cap) : cap;
+            points.push(corner.clone().addScaledVector(dir, -along));
+        }
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (const point of points) {
+            const v = point.applyMatrix4(inverse);
+            minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
+            minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
+            minZ = Math.min(minZ, v.z); maxZ = Math.max(maxZ, v.z);
+        }
+        const pad = Math.max(2, r * 0.05);
+        const depthSlack = Math.max(r, 50); // room for terrain above or below the lowest building point
+        cam.left = minX - pad; cam.right = maxX + pad;
+        cam.bottom = minY - pad; cam.top = maxY + pad;
+        cam.near = Math.max(0.1, -maxZ - depthSlack);
+        cam.far = -minZ + depthSlack;
         cam.updateProjectionMatrix();
         this.sunLight.target.updateMatrixWorld();
         this.sunLight.shadow.needsUpdate = true;
@@ -385,7 +439,7 @@ export class PanelRenderer {
 
     /** Recomputes silhouette segments when the view has changed since the last time. */
     private updateSilhouettes(camera: PerspectiveCamera | OrthographicCamera): void {
-        if (!this.style.silhouettes || this.edgeSets.every((e) => e.smooth.length === 0)) {
+        if (this.maskPass || !this.style.silhouettes || this.edgeSets.every((e) => e.smooth.length === 0)) {
             if (this.silhouetteLines) this.silhouetteLines.visible = false;
             this.stats.silhouetteSegments = 0;
             return;
@@ -456,7 +510,7 @@ export class PanelRenderer {
 
     /** True when shadows should be softened by averaging several renders. */
     private get softShadows(): boolean {
-        return this.style.shadows && this.style.shadowSoftness > 0 && this.sunFade > 0;
+        return !this.noShadows && (this.maskPass || this.style.shadows) && this.style.shadowSoftness > 0 && this.sunFade > 0;
     }
 
     /**
@@ -577,6 +631,96 @@ export class PanelRenderer {
         }
     }
 
+    private copyCanvas(): HTMLCanvasElement {
+        const source = this.renderer.domElement;
+        const copy = document.createElement('canvas');
+        copy.width = source.width;
+        copy.height = source.height;
+        copy.getContext('2d')!.drawImage(source, 0, 0);
+        return copy;
+    }
+
+    private getCatcher(): Mesh {
+        if (!this.catcher) {
+            this.catcher = new Mesh(new PlaneGeometry(1, 1), this.maskMaterial);
+            this.catcher.receiveShadow = true;
+            this.scene.add(this.catcher);
+        }
+        const centre = this.bounds.getCenter(new Vector3());
+        const size = 2 * (this.buildingSphere.radius + this.shadowCap()) + 100;
+        this.catcher.position.set(centre.x, centre.y, this.bounds.min.z - 0.01);
+        this.catcher.scale.set(size, size, 1);
+        this.catcher.updateMatrixWorld();
+        return this.catcher;
+    }
+
+    /** Draws only the shadows falling on the ground: transparent everywhere else, and behind buildings. */
+    private enterMaskPass(): void {
+        this.maskPass = true;
+        for (const mesh of this.buildingMeshes.values()) (mesh.material as MeshLambertMaterial).colorWrite = false;
+        if (this.lines) this.lines.visible = false;
+        if (this.silhouetteLines) this.silhouetteLines.visible = false;
+        if (this.contextMesh && this.style.contextMode !== 'hidden') {
+            // Real terrain catches the shadows, so they follow the ground's shape.
+            this.contextMesh.visible = true;
+            this.contextMesh.material = this.maskMaterial;
+            if (this.catcher) this.catcher.visible = false;
+        } else {
+            if (this.contextMesh) this.contextMesh.visible = false;
+            this.getCatcher().visible = true;
+        }
+        this.renderer.setClearColor(new Color(0x000000), 0);
+        this.updateSunLight();
+    }
+
+    private exitMaskPass(): void {
+        this.maskPass = false;
+        for (const mesh of this.buildingMeshes.values()) (mesh.material as MeshLambertMaterial).colorWrite = true;
+        if (this.lines) this.lines.visible = true;
+        if (this.catcher) this.catcher.visible = false;
+        this.applyStyle(this.style, this.panelColours); // restores the clear colour, context and sun
+    }
+
+    /**
+     * For a layered shadow image: one `base` render of the scene with no shadows (lit as step `reference`),
+     * and one shadow `mask` per step, transparent except where that step's sun casts a shadow on the ground.
+     * The masks respect the buildings, so a shadow behind a building is hidden. Soft shadows are averaged
+     * the same way as in exports. `prepare(i)` moves the sun to step `i`; the screen size is restored after.
+     */
+    captureShadowLayers(
+        width: number, steps: number, prepare: (index: number) => void, reference: number,
+    ): { base: HTMLCanvasElement; masks: HTMLCanvasElement[] } {
+        const aspect = this.width / this.height;
+        const prevWidth = this.width, prevHeight = this.height, prevRatio = this.renderer.getPixelRatio();
+        const frameHeight = Math.round(width / aspect);
+        this.renderer.setPixelRatio(1);
+        this.renderer.setSize(width, frameHeight, false);
+        this.width = width;
+        this.height = frameHeight;
+        const masks: HTMLCanvasElement[] = [];
+        let base: HTMLCanvasElement;
+        try {
+            prepare(reference);
+            this.noShadows = true;
+            this.updateSunLight();
+            this.render();
+            base = this.copyCanvas();
+            this.noShadows = false;
+            this.enterMaskPass();
+            for (let i = 0; i < steps; i++) {
+                prepare(i);
+                this.render();
+                masks.push(this.softShadows ? this.renderAveraged(EXPORT_SOFT_SAMPLES) : this.copyCanvas());
+            }
+        } finally {
+            this.noShadows = false;
+            if (this.maskPass) this.exitMaskPass();
+            this.resize(prevWidth, prevHeight, prevRatio);
+            this.render();
+        }
+        return { base, masks };
+    }
+
     /**
      * Renders `steps` frames at `width` pixels wide, calling `prepare(i)` before each one (to change the
      * sun, say), and returns a copy of each frame. The screen size is restored at the end.
@@ -630,6 +774,8 @@ export class PanelRenderer {
             this.contextLambert?.dispose();
         }
         this.shadowMaterial.dispose();
+        this.maskMaterial.dispose();
+        if (this.catcher) { this.scene.remove(this.catcher); this.catcher.geometry.dispose(); }
         this.lines?.geometry.dispose();
         this.lineMaterial.dispose();
         this.silhouetteMaterial.dispose();
