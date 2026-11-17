@@ -9,8 +9,10 @@
 		"preview": "vite preview"
 	},
 	"dependencies": {
+		"@types/three": "^0.187.0",
 		"forma-embedded-view-sdk": "^0.96.0",
-		"preact": "^10.29.8"
+		"preact": "^10.29.8",
+		"three": "^0.187.0"
 	},
 	"devDependencies": {
 		"@preact/preset-vite": "^2.10.2",
