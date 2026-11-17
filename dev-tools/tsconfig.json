@@ -1,0 +1,9 @@
+{
+	// Type-checks the test harness (npm run typecheck:tests). The app itself uses the root tsconfig.
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"types": ["vite/client"],
+		"lib": ["ES2022", "DOM", "DOM.Iterable"]
+	},
+	"include": ["lib", "stubs", "tests/*.ts", "tests/*.tsx", "../src"]
+}

@@ -42,9 +42,16 @@ const offsetMinutes = (date: Date, timeZone: string): number => {
  */
 export const zonedToUtc = (z: Zoned, timeZone: string): Date => {
     const wall = Date.UTC(z.year, z.month - 1, z.day, z.hour, z.minute);
-    let t = wall - offsetMinutes(new Date(wall), timeZone) * 60000;
-    t = wall - offsetMinutes(new Date(t), timeZone) * 60000; // re-check near a clock change
-    return new Date(t);
+    // The offsets in force half a day either side cover any clock change on that day.
+    const before = offsetMinutes(new Date(wall - 43_200_000), timeZone);
+    const after = offsetMinutes(new Date(wall + 43_200_000), timeZone);
+    const matches = (t: number) => {
+        const back = utcToZoned(new Date(t), timeZone);
+        return back.year === z.year && back.month === z.month && back.day === z.day && back.hour === z.hour && back.minute === z.minute;
+    };
+    const candidates = [wall - before * 60000, wall - after * 60000].filter(matches).sort((a, b) => a - b);
+    // No match means the time was skipped: reading it with the earlier offset lands just after the change.
+    return new Date(candidates[0] ?? wall - before * 60000);
 };
 
 /** A fixed-offset zone close to solar time, for projects with no time zone set. */

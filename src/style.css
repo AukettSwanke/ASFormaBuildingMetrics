@@ -11,7 +11,7 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     -webkit-text-size-adjust: 100%;
-    font-size: 9px; /* Base REM - all em values scale from here via body */
+    font-size: 10px; /* Base REM - all em values scale from here via body */
     /* Color tokens */
     --bg-page: #ffffff;
     --bg-section: #f9f9f9;
@@ -33,6 +33,9 @@
     --error-bg: #d32f2f;
     --error-text: #ffffff;
     --shadow-float: 0 4px 12px rgba(0, 0, 0, 0.15);
+    --focus-ring: 0 0 0 2px rgba(33, 150, 243, 0.45);
+    --radius: 6px;
+    --control-height: 2.6em;
 }
 
 /* ============================================================
@@ -57,6 +60,7 @@
         --accent-hover: #1976d2;
         --accent-active: #2196f3;
         --shadow-float: 0 4px 12px rgba(0, 0, 0, 0.6);
+        --focus-ring: 0 0 0 2px rgba(100, 170, 255, 0.6);
     }
 }
 
@@ -66,7 +70,7 @@
 body {
     margin: 0;
     padding: 0;
-    font-size: 1.2em; /* = 14px with 10px root */
+    font-size: 1.2em; /* = 12px with the 10px root */
     background-color: var(--bg-page);
     color: var(--text-primary);
     min-height: 100vh;
@@ -75,7 +79,7 @@ body {
 #app {
     max-width: 1280px;
     margin: 0 auto;
-    padding: 0 1em 8em 1em; /* bottom padding leaves room for floating legend */
+    padding: 0.8em 1em 4em 1em;
 }
 
 h2 {
@@ -86,8 +90,18 @@ h2 {
 
 h3 {
     font-size: 1.1em;
-    margin: 0.5em 0;
+    margin: 0 0 0.8em;
     font-weight: 600;
+}
+
+/* Sub-heading inside a section */
+h4 {
+    font-size: 0.8em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    margin: 1.4em 0 0.6em;
 }
 
 p {
@@ -95,16 +109,39 @@ p {
     margin: 0.5em 0;
 }
 
+:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
 /* ============================================================
    Section (existing baseline, preserved)
    ============================================================ */
 .section {
     background: var(--bg-section);
+    border: 1px solid var(--border-subtle);
     border-radius: 8px;
-    padding: 1.5em;
-    margin-bottom: 1em;
+    padding: 1.2em 1.3em;
+    margin-bottom: 0.8em;
     color: var(--text-primary);
 }
+
+    .section > :last-child {
+        margin-bottom: 0;
+    }
+
+/* Heading with actions on the right */
+.section__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6em;
+    margin-bottom: 0.8em;
+}
+
+    .section__head h3 {
+        margin: 0;
+    }
 
 /* ============================================================
    Buttons
@@ -115,11 +152,15 @@ button {
     color: var(--text-on-accent);
     border: none;
     border-radius: 4px;
-    padding: 0.4em 0.9em;
-    font-size: 0.9em;
+    min-height: var(--control-height);
+    padding: 0 1em;
+    font-size: 0.95em;
+    font-weight: 500;
     font-family: inherit;
+    line-height: 1.2;
     cursor: pointer;
-    transition: background 0.15s ease;
+    transition: background 0.15s ease, border-color 0.15s ease;
+    white-space: nowrap;
 }
 
     .button:disabled,
@@ -133,9 +174,9 @@ button {
         background: var(--accent-hover);
     }
 
-/* Secondary / ghost button variant for mode toggles etc. */
+/* Secondary button */
 .button-ghost {
-    background: transparent;
+    background: var(--bg-page);
     color: var(--text-primary);
     border: 1px solid var(--border-default);
 }
@@ -176,7 +217,7 @@ button {
     background: var(--bg-summary);
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
-    padding: 1em 1.5em;
+    padding: 0.9em 0.5em;
     margin-bottom: 0.8em;
     display: flex;
     align-items: stretch;
@@ -185,7 +226,8 @@ button {
 
 .summary-stat {
     flex: 1;
-    padding: 0 1em;
+    min-width: 0;
+    padding: 0 0.5em;
     text-align: center;
     border-right: 1px solid var(--border-subtle);
     display: flex;
@@ -199,11 +241,10 @@ button {
     }
 
 .summary-stat__label {
-    font-size: 0.75em;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-size: 0.85em;
     color: var(--text-secondary);
     font-weight: 500;
+    white-space: nowrap;
 }
 
 .summary-stat__value {
@@ -290,7 +331,7 @@ button {
 
 .building-row {
     display: grid;
-    grid-template-columns: 3em 1fr 1fr 1fr;
+    grid-template-columns: 3em 1fr 1fr 0.7fr;
     align-items: center;
     gap: 0.8em;
     padding: 0.6em 0.9em;
@@ -327,6 +368,36 @@ button {
 .building-row__metric {
     font-variant-numeric: tabular-nums;
     color: var(--text-primary);
+    text-align: right;
+}
+
+.building-row--head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    cursor: default;
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-size: 0.85em;
+    font-weight: 500;
+    padding-top: 0.4em;
+    padding-bottom: 0.4em;
+}
+
+    .building-row--head:hover {
+        background: var(--bg-subtle);
+    }
+
+    .building-row--head > div:not(:first-child) {
+        text-align: right;
+    }
+
+.building-row:focus-visible {
+    box-shadow: inset var(--focus-ring);
+}
+
+.section__head .sort-controls {
+    margin-bottom: 0;
 }
 
 .building-row__metric-label {
@@ -394,17 +465,28 @@ button {
 /* ============================================================
    Category panel - one row per value
    ============================================================ */
+/* The category name reads as the section heading and becomes a field on hover or focus. */
 .category-title {
     width: 100%;
     box-sizing: border-box;
     font-size: 1.1em !important;
     font-weight: 600;
     margin-bottom: 0.6em;
+    border-color: transparent !important;
+    background: transparent !important;
+    padding-left: 0.3em !important;
+    margin-left: -0.3em;
 }
+
+    .category-title:hover,
+    .category-title:focus {
+        border-color: var(--border-default) !important;
+        background: var(--bg-page) !important;
+    }
 
 .category-value {
     display: grid;
-    grid-template-columns: 2.2em minmax(0, 1fr) 2.5em auto auto;
+    grid-template-columns: 2.2em minmax(0, 1fr) 2em auto auto;
     align-items: center;
     gap: 0.5em;
     margin-bottom: 0.4em;
@@ -487,10 +569,12 @@ select {
     color: var(--text-primary);
     border: 1px solid var(--border-default);
     border-radius: 4px;
-    padding: 0.4em 0.6em;
-    font-size: 0.9em;
+    min-height: var(--control-height);
+    padding: 0 0.6em;
+    font-size: 0.95em;
     font-family: inherit;
     cursor: pointer;
+    min-width: 0;
 }
 
     select:hover {
@@ -498,21 +582,48 @@ select {
     }
 
 input[type="text"],
-input[type="number"] {
+input[type="number"],
+input[type="date"],
+input[type="time"] {
     background: var(--bg-page);
     color: var(--text-primary);
     border: 1px solid var(--border-default);
     border-radius: 4px;
-    padding: 0.4em 0.6em;
-    font-size: 0.9em;
+    min-height: var(--control-height);
+    box-sizing: border-box;
+    padding: 0 0.6em;
+    font-size: 0.95em;
     font-family: inherit;
     min-width: 0;
+    color-scheme: light dark;
 }
 
     input[type="text"]:hover,
-    input[type="number"]:hover {
+    input[type="number"]:hover,
+    input[type="date"]:hover,
+    input[type="time"]:hover {
         border-color: var(--border-strong);
     }
+
+    input:disabled,
+    select:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+input[type="range"] {
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 1.15em;
+    height: 1.15em;
+    margin: 0;
+}
 
 textarea {
     width: 100%;
@@ -543,12 +654,11 @@ input[type="color"] {
 }
 
 .sort-dir-btn {
-    background: transparent;
+    background: var(--bg-page);
     color: var(--text-primary);
     border: 1px solid var(--border-default);
-    padding: 0.4em 0.7em;
-    font-size: 0.9em;
-    min-width: 2.4em;
+    padding: 0;
+    min-width: var(--control-height);
 }
 
     .sort-dir-btn:hover:not(:disabled) {
@@ -568,3 +678,295 @@ input[type="color"] {
     .skeleton-row--building:last-child {
         border-bottom: none;
     }
+/* ============================================================
+   Tabs - one per area of the panel, under the summary strip
+   ============================================================ */
+.tabs {
+    display: flex;
+    gap: 0.2em;
+    padding: 0.25em;
+    margin-bottom: 0.8em;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.tabs__tab {
+    flex: 1;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    min-height: 2.4em;
+}
+
+    .tabs__tab:hover:not(:disabled) {
+        background: var(--bg-section);
+        color: var(--text-primary);
+    }
+
+    .tabs__tab[aria-selected="true"],
+    .tabs__tab[aria-selected="true"]:hover {
+        background: var(--bg-page);
+        color: var(--text-primary);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    }
+
+/* ============================================================
+   Segmented control - mutually exclusive choices
+   ============================================================ */
+.segmented {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+}
+
+    .segmented > button {
+        background: var(--bg-page);
+        color: var(--text-primary);
+        border: 1px solid var(--border-default);
+        font-weight: 400;
+    }
+
+        .segmented > button:hover:not(:disabled) {
+            background: var(--bg-subtle);
+        }
+
+        .segmented > button[aria-pressed="true"] {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--text-on-accent);
+            font-weight: 500;
+        }
+
+.segmented--fill > button {
+    flex: 1;
+}
+
+.segmented--compact {
+    flex-wrap: nowrap;
+    gap: 0.3em;
+    width: 100%;
+}
+
+    .segmented--compact > button {
+        padding: 0 0.3em;
+        min-width: 0;
+        font-size: 0.9em;
+    }
+
+/* ============================================================
+   Form fields - label on the left, control on the right
+   ============================================================ */
+.field {
+    display: grid;
+    grid-template-columns: 7.5em minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.4em 0.7em;
+    margin-bottom: 0.6em;
+    min-height: var(--control-height);
+}
+
+.field__label {
+    color: var(--text-secondary);
+    font-size: 0.95em;
+}
+
+.field__control {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+    .field__control > select,
+    .field__control > input[type="text"],
+    .field__control > input[type="date"] {
+        flex: 1;
+    }
+
+.field__value {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    min-width: 3.2em;
+    text-align: right;
+}
+
+    .field__value input[type="number"] {
+        width: 4.6em;
+    }
+
+.check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    cursor: pointer;
+}
+
+/* Short explanatory text under a control or section */
+.help {
+    color: var(--text-secondary);
+    font-size: 0.9em;
+    margin: 0.6em 0 0;
+}
+
+.status {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    color: var(--text-secondary);
+    font-size: 0.9em;
+    margin: 0.6em 0 0;
+}
+
+.status--warning {
+    color: var(--text-primary);
+}
+
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    margin-top: 1em;
+}
+
+.actions--end {
+    justify-content: flex-end;
+}
+
+/* ============================================================
+   Disclosure - optional detail that stays out of the way
+   ============================================================ */
+.disclosure {
+    margin-top: 1em;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 0.6em;
+}
+
+    .disclosure > summary {
+        cursor: pointer;
+        color: var(--text-secondary);
+        font-size: 0.95em;
+        padding: 0.3em 0;
+        list-style: none;
+    }
+
+        .disclosure > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .disclosure > summary::before {
+            content: '▸';
+            display: inline-block;
+            width: 1.1em;
+            transition: transform 0.15s ease;
+        }
+
+    .disclosure[open] > summary::before {
+        transform: rotate(90deg);
+    }
+
+    .disclosure > summary:hover {
+        color: var(--text-primary);
+    }
+
+/* ============================================================
+   Legend - compact swatch list
+   ============================================================ */
+.legend {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.4em 1em;
+    margin-top: 0.9em;
+}
+
+.legend__item {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    font-size: 0.95em;
+    min-width: 0;
+}
+
+.legend__swatch {
+    width: 1.1em;
+    height: 1.1em;
+    border-radius: 3px;
+    flex: none;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+/* ============================================================
+   Render preview
+   ============================================================ */
+.preview {
+    position: relative;
+    width: 100%;
+    border: 1px solid var(--border-default);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+    .preview canvas {
+        display: block;
+        width: 100%;
+    }
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    flex-wrap: wrap;
+    margin-top: 0.6em;
+}
+
+.toolbar__spacer {
+    flex: 1;
+}
+
+.result-image {
+    width: 100%;
+    display: block;
+    margin-top: 0.8em;
+    border: 1px solid var(--border-default);
+    border-radius: 4px;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 1.2em 0.5em 0.4em;
+}
+
+    .empty-state p {
+        color: var(--text-secondary);
+        margin: 0 auto 1em;
+        max-width: 28em;
+    }
+
+.facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.25em 1em;
+    font-size: 0.95em;
+    font-variant-numeric: tabular-nums;
+}
+
+    .facts dt {
+        color: var(--text-secondary);
+    }
+
+    .facts dd {
+        margin: 0;
+    }
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}

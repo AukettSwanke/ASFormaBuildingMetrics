@@ -170,6 +170,11 @@ export class PanelRenderer {
     private height = 1;
     /** On-screen width in CSS pixels; line weights are defined against this, so exports scale up with the image. */
     private screenWidth = 1;
+    /**
+     * Width over height of the frame as asked for (16:9, say), kept unrounded so exports come out at
+     * exactly that ratio rather than at the ratio of the rounded on-screen pixel size.
+     */
+    private frameAspect = 1;
 
     stats = { buildingTriangles: 0, contextTriangles: 0, edgeSegments: 0, smoothEdges: 0, silhouetteSegments: 0 };
 
@@ -402,6 +407,7 @@ export class PanelRenderer {
     }
 
     resize(width: number, height: number, pixelRatio: number): void {
+        this.frameAspect = Math.max(1e-3, width) / Math.max(1e-3, height);
         this.width = Math.max(1, Math.round(width));
         this.height = Math.max(1, Math.round(height));
         this.screenWidth = this.width;
@@ -485,7 +491,7 @@ export class PanelRenderer {
     }
 
     render(): void {
-        const camera = this.activeCamera(this.width / this.height);
+        const camera = this.activeCamera(this.frameAspect);
         const ratio = this.renderer.getPixelRatio();
         const resolution = new Vector3(this.width * ratio, (this.band ? this.band.rows : this.height) * ratio, 0);
         this.lineMaterial.resolution.set(resolution.x, resolution.y);
@@ -612,13 +618,7 @@ export class PanelRenderer {
 
     /** Renders at `width` pixels wide (same aspect as the screen), returns a PNG, then restores the screen size. */
     async exportPng(width: number): Promise<Blob> {
-        const aspect = this.width / this.height;
-        const prevWidth = this.width, prevHeight = this.height, prevRatio = this.renderer.getPixelRatio();
-        const exportHeight = Math.round(width / aspect);
-        this.renderer.setPixelRatio(1);
-        this.renderer.setSize(width, exportHeight, false);
-        this.width = width;
-        this.height = exportHeight;
+        const restore = this.useExportSize(width);
         this.render();
         try {
             // Soft shadows are averaged over several renders; hard ones come straight from the canvas.
@@ -626,9 +626,25 @@ export class PanelRenderer {
             return await new Promise<Blob>((resolve, reject) =>
                 source.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG export failed'))), 'image/png'));
         } finally {
-            this.resize(prevWidth, prevHeight, prevRatio);
-            this.render();
+            restore();
         }
+    }
+
+    /**
+     * Switches the renderer to an export frame `width` pixels wide at the frame's aspect ratio and a pixel
+     * ratio of 1. Returns a function that puts the on-screen size back and redraws.
+     */
+    private useExportSize(width: number): () => void {
+        const prev = { width: this.width, height: this.height, ratio: this.renderer.getPixelRatio(), aspect: this.frameAspect };
+        this.width = width;
+        this.height = Math.max(1, Math.round(width / this.frameAspect));
+        this.renderer.setPixelRatio(1);
+        this.renderer.setSize(this.width, this.height, false);
+        return () => {
+            this.resize(prev.width, prev.height, prev.ratio);
+            this.frameAspect = prev.aspect;
+            this.render();
+        };
     }
 
     private copyCanvas(): HTMLCanvasElement {
@@ -690,13 +706,7 @@ export class PanelRenderer {
     captureShadowLayers(
         width: number, steps: number, prepare: (index: number) => void, reference: number,
     ): { base: HTMLCanvasElement; masks: HTMLCanvasElement[] } {
-        const aspect = this.width / this.height;
-        const prevWidth = this.width, prevHeight = this.height, prevRatio = this.renderer.getPixelRatio();
-        const frameHeight = Math.round(width / aspect);
-        this.renderer.setPixelRatio(1);
-        this.renderer.setSize(width, frameHeight, false);
-        this.width = width;
-        this.height = frameHeight;
+        const restore = this.useExportSize(width);
         const masks: HTMLCanvasElement[] = [];
         let base: HTMLCanvasElement;
         try {
@@ -715,8 +725,7 @@ export class PanelRenderer {
         } finally {
             this.noShadows = false;
             if (this.maskPass) this.exitMaskPass();
-            this.resize(prevWidth, prevHeight, prevRatio);
-            this.render();
+            restore();
         }
         return { base, masks };
     }
@@ -726,13 +735,8 @@ export class PanelRenderer {
      * sun, say), and returns a copy of each frame. The screen size is restored at the end.
      */
     captureSequence(width: number, steps: number, prepare: (index: number) => void): HTMLCanvasElement[] {
-        const aspect = this.width / this.height;
-        const prevWidth = this.width, prevHeight = this.height, prevRatio = this.renderer.getPixelRatio();
-        const frameHeight = Math.round(width / aspect);
-        this.renderer.setPixelRatio(1);
-        this.renderer.setSize(width, frameHeight, false);
-        this.width = width;
-        this.height = frameHeight;
+        const restore = this.useExportSize(width);
+        const frameHeight = this.height;
         const frames: HTMLCanvasElement[] = [];
         try {
             for (let i = 0; i < steps; i++) {
@@ -749,15 +753,14 @@ export class PanelRenderer {
                 frames.push(copy);
             }
         } finally {
-            this.resize(prevWidth, prevHeight, prevRatio);
-            this.render();
+            restore();
         }
         return frames;
     }
 
-    /** Width and height of the on-screen view, for planning export layouts. */
+    /** Width over height of the frame, for planning export layouts. */
     get aspect(): number {
-        return this.width / this.height;
+        return this.frameAspect;
     }
 
     gpuInfo(): string {
