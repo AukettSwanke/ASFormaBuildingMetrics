@@ -40,7 +40,7 @@ Rules: measure against expected values rather than eyeballing; prove a new check
 
 ## Architecture
 
-Three tabs (Metrics, Render, Data), no routing, no state library, no component folder. Files under `src/`:
+Three tabs (Metrics, Render, Data), no routing, no state library. The Render tab's UI lives in `src/render/`; everything else is directly under `src/`:
 
 | File | Role |
 |---|---|
@@ -49,7 +49,7 @@ Three tabs (Metrics, Render, Data), no routing, no state library, no component f
 | `categories.ts` | User-defined category model and project storage. Also exports `readJson` / `writeJson` (writes queued per key), reused by presets |
 | `table.ts` | Export table and CSV import (pure) |
 | `envelope.ts` | Context-envelope geometry and GLB encoder (pure) |
-| `RenderEngine.tsx` (~810 lines) | The whole Render UI. Imports three.js lazily on first *Load scene* |
+| `render/` | The Render tab's UI, split by section (see *Render tab* below). Imports three.js lazily on first *Load scene* |
 | `panelRender.ts` (~800 lines) | `PanelRenderer` class, built-in `PRESETS`, the `RenderStyle` type, all rendering and export logic |
 | `silhouette.ts` | Pure. Hard edges (always drawn) and smooth edges (drawn only as silhouettes for the current view) |
 | `sunPosition.ts` | Pure NOAA solar position; `sunVector` gives a Forma-space direction (X east, Y north, Z up) |
@@ -99,7 +99,25 @@ Three tabs (Metrics, Render, Data), no routing, no state library, no component f
 
 ## Render tab (panel engine)
 
-`RenderEngine.tsx` owns all UI state; `PanelRenderer` owns the three.js scene. Flow: *Load scene* → lazy `import('./panelRender')` → fetch building triangles per path and (optionally) the context mesh → subscribe to the Forma camera → every camera event calls `setView` + `render`. Style edits go through `applyStyle(style, panelColours)`.
+`PanelRenderer` (`panelRender.ts`) owns the three.js scene; the UI in `src/render/` drives it. Flow: *Load scene* → lazy `import('../panelRender')` → fetch building triangles per path and (optionally) the context mesh → subscribe to the Forma camera → every camera event calls `setView` + `render`. Style edits go through `applyStyle(style, panelColours)`.
+
+Files in `src/render/`:
+
+| File | Role |
+|---|---|
+| `RenderEngine.tsx` | Orchestrator. Holds the shared state (style, chosen preset, frame, busy and status, overlay) and `runTask`, which marks the panel busy, shows progress and reports failures. Wires the hooks to the sections |
+| `useSceneEngine.ts` | The engine's life: lazy import and creation, `loadGeometry`, `followCamera`, `redraw`, the resize observer, style pushes and the soft-shadow preview. The only place that imports `../panelRender` as a value |
+| `useSun.ts` | Forma's sun, project location and time zone; follow-Forma or custom date and time; lights the scene; *Set Forma's sun*; `restore()` after a study moves the sun |
+| `useSavedPresets.ts` | Saved presets: load from project storage, save, update, two-click delete, file export and import |
+| `shadowStudy.ts` | `renderShadowStudy`: draws a study sheet or a layered image with the engine (no UI) |
+| `Preview.tsx` | Canvas, soft-preview and overlay layers, toolbar. Always mounted, hidden until loaded, because the engine draws into its canvas |
+| `LookSection.tsx` / `SavedPresets.tsx` | Look: presets, saved presets, lines, colours, light and shadow |
+| `SunSection.tsx` | Sun section, and `QuickDates` (equinox and solstice buttons) |
+| `ExportSection.tsx` | Image or shadow study: export settings, the study's own settings and its last result |
+| `SceneDetails.tsx` | `LoadPrompt` (before loading) and Scene details (after) |
+| `shared.ts` | Constants (`FOV`, `ASPECTS`, `STUDY_DATES`, export widths), types and small helpers. Type-only imports from the engine |
+
+Keep value imports of `panelRender` inside `useSceneEngine.ts`; anywhere else, use `import type`, or three.js is pulled into the main bundle (check that the build still emits a separate `panelRender-*.js` chunk).
 
 Features: presets (Line drawing, Clay, Panel colours, Night, plus saved presets with JSON file export/import); edge line weight 0.05–8 px (number box 0.01–20); silhouettes with their own weight; depth-weighted line width (`DepthLineMaterial`, a patched `LineMaterial` that warns and falls back if the three.js shader text changes); sun and ambient strength; shadows and shadow softness; transparent background with context shown, shadows-only or hidden; Sun section (follow Forma, or a date and time in the project time zone, and *Set Forma's sun to this*); Shadow study (separate images on a labelled sheet, or one layered image coloured by time or accumulated as hours in shadow); *Compare with Forma*; PNG export 1280–5120 px wide.
 

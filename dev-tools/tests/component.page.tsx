@@ -1,7 +1,7 @@
 // Mounts <RenderEngine> on its own against the Forma stub. Exposes mount(canEdit) and unmount().
 import { render } from 'preact';
 import '../../src/style.css';
-import { RenderEngine } from '../../src/RenderEngine';
+import { RenderEngine } from '../../src/render/RenderEngine';
 import '../stubs/forma';
 
 const g = globalThis as any;
