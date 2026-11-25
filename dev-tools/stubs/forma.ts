@@ -198,7 +198,10 @@ export const Forma = {
             },
         },
         floorStack: {
-            createFromFloors: async (args: unknown) => {
+            createFromFloors: async (args: { plans?: { id: string; vertices: { id: string }[] }[] }) => {
+                // Forma checks plan and vertex IDs and refuses the whole request on the first bad one.
+                const bad = (args.plans ?? []).flatMap((p) => [p.id, ...p.vertices.map((v) => v.id)]).find((id) => !/^[a-zA-Z0-9-]{2,20}$/.test(id));
+                if (bad !== undefined) throw new Error(`Input validation failed: Vertex id must match pattern [a-zA-Z0-9-]{2,20} (${bad})`);
                 log('floorStack.createFromFloors', structuredClone(args));
                 return { urn: `urn:adsk-forma-elements:floorstack:pro_test:new-${++created}:1` };
             },
