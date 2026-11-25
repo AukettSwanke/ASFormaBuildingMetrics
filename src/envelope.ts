@@ -169,8 +169,14 @@ export const translationMatrix = ([x, y, z]: [number, number, number]) =>
         number, number, number, number, number, number, number, number,
     ];
 
-/** Encodes a flat triangle list (Forma Z-up) as a binary glTF with flat normals and a red material. */
-export const encodeGlb = (positionsZUp: number[]): ArrayBuffer => {
+/**
+ * Encodes a flat triangle list (Forma Z-up) as a binary glTF with flat normals.
+ * The material is the envelope's translucent red unless `look` says otherwise.
+ */
+export const encodeGlb = (
+    positionsZUp: ArrayLike<number>,
+    look: { name: string; rgba: number[] } = { name: 'Context envelope', rgba: ENVELOPE_RGBA },
+): ArrayBuffer => {
     const count = positionsZUp.length / 3;
     const pos = new Float32Array(positionsZUp.length);
     for (let i = 0; i < count; i++) {
@@ -201,13 +207,13 @@ export const encodeGlb = (positionsZUp: number[]): ArrayBuffer => {
         asset: { version: '2.0', generator: 'ASFormaBuildingMetrics' },
         scene: 0,
         scenes: [{ nodes: [0] }],
-        nodes: [{ mesh: 0, name: 'Context envelope' }],
+        nodes: [{ mesh: 0, name: look.name }],
         meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 0 }] }],
         materials: [{
             name: 'Highlight',
-            alphaMode: 'BLEND',
+            alphaMode: look.rgba[3] < 1 ? 'BLEND' : 'OPAQUE',
             doubleSided: true,
-            pbrMetallicRoughness: { baseColorFactor: ENVELOPE_RGBA, metallicFactor: 0, roughnessFactor: 1 },
+            pbrMetallicRoughness: { baseColorFactor: look.rgba, metallicFactor: 0, roughnessFactor: 1 },
         }],
         accessors: [
             { bufferView: 0, componentType: 5126, count, type: 'VEC3', min, max },

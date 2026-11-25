@@ -72,13 +72,20 @@ if (browserSuites.length) {
 }
 
 /** A blank page with an #app element, the given CSS and script, served from about:blank. */
-const openPage = async (script, css, viewport = { width: 420, height: 900 }) => {
+const openPage = async (script, css, viewport = { width: 420, height: 900 }, init = {}) => {
     const context = await browser.newContext({ viewport, acceptDownloads: true, locale: 'en-GB', timezoneId: 'Europe/London' });
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
     await page.setContent(`<!doctype html><html lang="en-GB"><head><meta charset="utf-8">${css ? `<style>${readFileSync(css, 'utf8')}</style>` : ''}</head><body><div id="app"></div></body></html>`);
+    // Starting scene and storage for the stub (see stubs/forma.ts), e.g. to stand in for another project.
+    if (init.scene || init.storage) {
+        await page.evaluate(({ scene, storage }) => {
+            if (scene) globalThis.__formaScene = scene;
+            if (storage) globalThis.__storage = storage;
+        }, init);
+    }
     await page.addScriptTag({ path: script });
     return { page, context, errors };
 };
@@ -108,7 +115,7 @@ try {
         if (suite === 'panel') {
             const file = await bundle('tests/panel.page.tsx', 'panel.js', { format: 'iife' });
             const { runPanelTests } = await import('./tests/panel.spec.mjs');
-            report('panel', await runPanelTests({ openPage: () => openPage(file, file.replace(/\.js$/, '.css')) }));
+            report('panel', await runPanelTests({ openPage: (init) => openPage(file, file.replace(/\.js$/, '.css'), undefined, init) }));
         }
 
         if (suite === 'shots') {
