@@ -453,12 +453,20 @@ export interface FloorStackRequest {
     }[];
 }
 
+/** Forma's rule for plan and vertex IDs in `createFromFloors` (checked by the server). */
+export const FLOOR_STACK_ID = /^[a-zA-Z0-9-]{2,20}$/;
+
 /**
  * Converts a graph building into the floors and plans that
  * `Forma.elements.floorStack.createFromFloors` takes, in the element's own
  * coordinates. Each space becomes a unit; loops are wound counter-clockwise
  * as the SDK asks (for holes too). `toFunctionId` maps stored functions to
  * the target project's IDs.
+ *
+ * Forma's own point IDs can't be passed on (they break the ID rule above), so
+ * each plan's vertices are renumbered "v0", "v1"…, merging points that sit at
+ * the same place (to 0.1 mm). Repeated points in a loop are dropped, and loops
+ * left with fewer than three points are skipped.
  */
 export const graphToFloorStack = (
     graph: GraphBuilding, props: SpaceProps, toFunctionId: (value: string | undefined) => string | undefined,
@@ -468,26 +476,44 @@ export const graphToFloorStack = (
     graph.levels.forEach((level, index) => {
         const id = `plan-${index}`;
         const surfaces = new Map(level.surfaces.map((s) => [s.id, s]));
-        const used = new Set<string>();
-        const ccw = (ids: string[]) => {
-            const pts = ids.map((p) => level.points[p]).filter((p): p is Pt => !!p);
-            const loop = signedArea(pts) < 0 ? [...ids].reverse() : ids;
-            loop.forEach((p) => used.add(p));
-            return loop;
+        const vertices: FloorStackRequest['plans'][number]['vertices'] = [];
+        const byPlace = new Map<string, string>();
+        const vertexAt = ([x, y]: Pt) => {
+            const key = `${Math.round(x * 1e4)},${Math.round(y * 1e4)}`;
+            let v = byPlace.get(key);
+            if (!v) {
+                v = `v${vertices.length}`;
+                byPlace.set(key, v);
+                vertices.push({ id: v, x, y });
+            }
+            return v;
+        };
+        const loop = (pointIds: string[]): string[] => {
+            const pts = pointIds.map((p) => level.points[p]).filter((p): p is Pt => !!p);
+            const ids: string[] = [];
+            const kept: Pt[] = [];
+            for (const p of pts) {
+                const v = vertexAt(p);
+                if (ids[ids.length - 1] !== v) { ids.push(v); kept.push(p); }
+            }
+            while (ids.length > 1 && ids[0] === ids[ids.length - 1]) { ids.pop(); kept.pop(); }
+            if (new Set(ids).size < 3) return [];
+            return signedArea(kept) < 0 ? ids.reverse() : ids;
         };
         const units = level.spaces.map((space) => {
             const p = props.get(space.id) ?? {};
             const program = p.program?.toUpperCase();
             const functionId = toFunctionId(p.function);
             return {
-                polygon: ccw(loopIds(space.outerLoop, surfaces)),
-                holes: (space.innerLoops ?? []).map((loop) => ccw(loopIds(loop, surfaces))),
+                polygon: loop(loopIds(space.outerLoop, surfaces)),
+                holes: (space.innerLoops ?? []).map((l) => loop(loopIds(l, surfaces))).filter((h) => h.length >= 3),
                 ...(program && PROGRAMS.has(program) ? { program: program as 'CORE' } : {}),
                 ...(functionId ? { functionId } : {}),
             };
         }).filter((u) => u.polygon.length >= 3);
-        const vertices = [...used].map((p) => ({ id: p, x: level.points[p]![0], y: level.points[p]![1] }));
-        plans.push({ id, vertices, units });
+        // Only vertices a kept loop uses (a skipped loop may have added some).
+        const used = new Set(units.flatMap((u) => [...u.polygon, ...u.holes.flat()]));
+        plans.push({ id, vertices: vertices.filter((v) => used.has(v.id)), units });
         floors.push({ planId: id, height: level.height });
     });
     return { floors, plans };

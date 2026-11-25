@@ -30,6 +30,16 @@ type Urn = Parameters<typeof Forma.elements.replace>[0]['urn'];
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** Runs one Forma call, so a failure says which step it was (Forma's own messages often don't). */
+const step = async <T,>(name: string, call: () => Promise<T>): Promise<T> => {
+    try {
+        return await call();
+    } catch (error) {
+        console.error(`Transfer, ${name}:`, error);
+        throw new Error(`${name} failed: ${message(error)}`);
+    }
+};
+
 const readFunctions = async (): Promise<BuildingFunction[]> => {
     try {
         return (await Forma.settings.get()).buildingFunctions;
@@ -278,8 +288,9 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                 for (const [i, r] of preview.rebuilds.entries()) {
                     setBusy(`Setting functions ${i + 1} of ${preview.rebuilds.length}…`);
                     try {
-                        const { urn } = await Forma.elements.floorStack.createFromFloors(graphToFloorStack(r.graph, r.props, toTarget));
-                        await Forma.elements.replace({ path: r.path, urn: urn as Urn });
+                        const { urn } = await step('creating the rebuilt building',
+                            () => Forma.elements.floorStack.createFromFloors(graphToFloorStack(r.graph, r.props, toTarget)));
+                        await step('swapping it in', () => Forma.elements.replace({ path: r.path, urn: urn as Urn }));
                         rebuilt++;
                     } catch (e) {
                         problems.push(`${label(file.buildings[r.pair.source])}: ${message(e)}`);
@@ -297,10 +308,12 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                     try {
                         if (b.floorStacks.length) {
                             for (const stack of b.floorStacks) {
-                                const { urn } = await Forma.elements.floorStack.createFromFloors(
+                                const { urn } = await step('creating the building from its floors', () => Forma.elements.floorStack.createFromFloors(
                                     graphToFloorStack(stack.graph, ownSpaceProps(stack.graph), toTarget),
-                                );
-                                const { path } = await Forma.elements.add({ urn: urn as Urn, transform: shifted(stack.transform as Matrix, shift), name: b.name });
+                                ));
+                                const { path } = await step('placing it', () => Forma.elements.add({
+                                    urn: urn as Urn, transform: shifted(stack.transform as Matrix, shift), name: b.name,
+                                }));
                                 created.push({ source: index, target: path });
                             }
                         } else if (b.mesh) {
@@ -313,17 +326,17 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                             for (let k = 0; k < world.length; k += 3) {
                                 local[k] = world[k] - ox; local[k + 1] = world[k + 1] - oy; local[k + 2] = world[k + 2] - oz;
                             }
-                            const { blobId } = await Forma.integrateElements.uploadFile({
+                            const { blobId } = await step('uploading its shape', () => Forma.integrateElements.uploadFile({
                                 data: encodeGlb(local, { name: label(b), rgba: MESH_RGBA }),
-                            });
+                            }));
                             const functionId = toTarget(b.functionId);
-                            const { urn } = await Forma.integrateElements.createElementV2({
+                            const { urn } = await step('creating the building element', () => Forma.integrateElements.createElementV2({
                                 properties: { name: label(b), category: BUILDING_CATEGORY, ...(functionId ? { functionId } : {}) },
                                 representations: { volumeMesh: { type: 'linked', blobId } },
-                            });
-                            const { path } = await Forma.elements.add({
+                            }));
+                            const { path } = await step('placing it', () => Forma.elements.add({
                                 urn, name: label(b), transform: translationMatrix([ox + shift.x, oy + shift.y, oz]),
-                            });
+                            }));
                             created.push({ source: index, target: path });
                         } else {
                             problems.push(`${label(b)}: the file has no geometry for it`);

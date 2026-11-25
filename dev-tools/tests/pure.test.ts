@@ -12,7 +12,7 @@ import { PRESETS } from '../../src/panelRender';
 import { studyTimes } from '../../src/studySheet';
 import { decodeText, parseTable, toCsv } from '../../src/table';
 import {
-    GraphBuilding, Placed, copySpaceFunctions, decodeMesh, detectShift, encodeMesh, graphToFloorStack, mapFunction,
+    FLOOR_STACK_ID, GraphBuilding, Placed, copySpaceFunctions, decodeMesh, detectShift, encodeMesh, graphToFloorStack, mapFunction,
     matchBuildings, ownSpaceProps, parseTransferFile, planCategoryTransfer, planFunctions,
 } from '../../src/transfer';
 
@@ -252,6 +252,21 @@ export const run = async () => {
         check('transfer: units carry target function IDs and every outline is counter-clockwise',
             JSON.stringify(units.map((u) => u.fn)) === JSON.stringify(['n-retail', 'n-office', 'residential']) && units.every((u) => u.a > 0)
             && near(units[0].a, 200, 1e-9) && near(units[2].a, 400, 1e-9), units);
+        const validIds = (req: typeof stack) => req.plans.every((pl) => FLOOR_STACK_ID.test(pl.id)
+            && pl.vertices.every((v) => FLOOR_STACK_ID.test(v.id))
+            && pl.units.every((u) => [...u.polygon, ...u.holes.flat()].every((id) => pl.vertices.some((v) => v.id === id))));
+        // Forma's own point IDs are long (and the fixture's contain "_"), which createFromFloors refuses.
+        check('transfer: plan and vertex IDs follow Forma\'s rule, and every loop refers to a listed vertex',
+            validIds(stack) && !FLOOR_STACK_ID.test(Object.keys(tgt.levels[0].points)[0]), stack.plans[0].vertices.slice(0, 3));
+        check('transfer: corners shared by neighbouring spaces become one vertex', stack.plans[0].vertices.length === 6,
+            stack.plans[0].vertices.length);
+        // A loop with a repeated point and a closing point, and a sliver that collapses to two points.
+        const messy = graphOf([{ height: 3, spaces: [{ rect: [0, 0, 10, 10] }, { rect: [20, 0, 20, 10] }] }], 'm') as GraphBuilding;
+        const outer = messy.levels[0].spaces[0].outerLoop;
+        messy.levels[0].spaces[0].outerLoop = [outer[0], outer[0], ...outer.slice(1), outer[0]];
+        const cleaned = graphToFloorStack(messy, ownSpaceProps(messy), (v) => v);
+        check('transfer: repeated points are dropped and degenerate spaces skipped',
+            cleaned.plans[0].units.length === 1 && cleaned.plans[0].units[0].polygon.length === 4 && validIds(cleaned), cleaned.plans[0]);
         const own = graphToFloorStack(src, ownSpaceProps(src), (v) => v);
         check('transfer: a building rebuilt from its own floors keeps its functions',
             JSON.stringify(own.plans.flatMap((pl) => pl.units.map((u) => u.functionId))) === JSON.stringify(['f-retail', 'f-office', 'residential']));
