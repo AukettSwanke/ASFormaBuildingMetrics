@@ -8,6 +8,7 @@ import {
 } from "./categories";
 import { buildEnvelope, encodeGlb, translationMatrix } from "./envelope";
 import { RenderEngine } from "./render/RenderEngine";
+import { TransferSection } from "./TransferSection";
 import { Field, Legend, Spinner, TabPanel, Tabs, preference } from "./ui";
 import {
     ImportPlan, buildExportRows, categoryValueName, decodeText, parseTable, planImport, toCsv, toTsv,
@@ -618,7 +619,10 @@ function App() {
     const [sortKey, setSortKey] = useState<SortKey>('index');
     const [sortDir, setSortDir] = useState<SortDir>('asc');
 
-    // --------- ANALYSIS PIPELINE (unchanged) ---------
+    /** Bumped to read the buildings again, e.g. after a transfer adds or rebuilds some. */
+    const [reloadKey, setReloadKey] = useState<number>(0);
+
+    // --------- ANALYSIS PIPELINE ---------
     useEffect(() => {
         const fetchData = async () => {
             setIsLoading(true);
@@ -699,7 +703,7 @@ function App() {
             }
         };
         fetchData();
-    }, []);
+    }, [reloadKey]);
 
     // --------- CATEGORIES: load from the Forma project ---------
     useEffect(() => {
@@ -1335,6 +1339,19 @@ function App() {
                 {!canEdit && !isLoading && (
                     <p class="help">Importing categories needs edit access to this Forma project.</p>
                 )}
+
+                <TransferSection
+                    buildings={buildingData}
+                    categories={categories}
+                    assignments={assignments}
+                    canEdit={canEdit && categoriesReady}
+                    disabled={busyAll}
+                    onCategories={(nextCategories, nextAssignments) => {
+                        updateCategories(nextCategories);
+                        updateAssignments(nextAssignments);
+                    }}
+                    onReload={() => setReloadKey((k) => k + 1)}
+                />
             </TabPanel>
         </>
     );

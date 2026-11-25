@@ -40,3 +40,43 @@ export const prism = (cx: number, cy: number, radius: number, height: number, si
     }
     return new Float32Array(out);
 };
+
+/** A Forma `graphBuilding` made of rectangular spaces, in the element's own coordinates. */
+export interface GraphSpec {
+    height: number;
+    spaces: { rect: [number, number, number, number]; function?: string; clockwise?: boolean }[];
+}
+
+/**
+ * Builds a graph building from rectangles. `prefix` makes point, surface and
+ * space IDs differ between buildings, as they would in two projects.
+ */
+export const graphOf = (levels: GraphSpec[], prefix = 'g') => {
+    const units: { id: string; properties: { function?: string }; spaceIds: string[] }[] = [];
+    const out = levels.map((level, li) => {
+        const points: Record<string, [number, number]> = {};
+        const surfaces: { id: string; pointA: string; pointB: string }[] = [];
+        const spaces = level.spaces.map((space, si) => {
+            const [x0, y0, x1, y1] = space.rect;
+            let corners: [number, number][] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+            if (space.clockwise) corners = [...corners].reverse();
+            const ids = corners.map((c, k) => {
+                const id = `${prefix}${li}p${si}_${k}`;
+                points[id] = c;
+                return id;
+            });
+            // Surfaces run backwards with directionAToB false, so the loop walks them the right way.
+            const outerLoop = ids.map((a, k) => {
+                const b = ids[(k + 1) % ids.length];
+                const id = `${prefix}${li}s${si}_${k}`;
+                surfaces.push({ id, pointA: b, pointB: a });
+                return { id: `${id}c`, partnerId: null, surfaceId: id, directionAToB: false };
+            });
+            const id = `${prefix}${li}space${si}`;
+            units.push({ id: `${id}u`, properties: space.function ? { function: space.function } : {}, spaceIds: [id] });
+            return { id, outerLoop };
+        });
+        return { height: level.height, points, spaces, surfaces };
+    });
+    return { units, levels: out };
+};

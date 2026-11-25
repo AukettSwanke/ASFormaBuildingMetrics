@@ -1,7 +1,7 @@
 // Pure modules, run in node. No Forma, no WebGL.
 
 import { check, near, results, test } from '../lib/check';
-import { box, prism } from '../lib/scene';
+import { box, graphOf, prism } from '../lib/scene';
 import { sunAngles, sunVector } from '../../src/sunPosition';
 import { fallbackZone, formatClock, isoDate, parseIsoDate, utcToZoned, zonedToUtc } from '../../src/timeZone';
 import { buildEdgeSet, findSilhouettes } from '../../src/silhouette';
@@ -11,6 +11,10 @@ import {
 import { PRESETS } from '../../src/panelRender';
 import { studyTimes } from '../../src/studySheet';
 import { decodeText, parseTable, toCsv } from '../../src/table';
+import {
+    GraphBuilding, Placed, copySpaceFunctions, decodeMesh, detectShift, encodeMesh, graphToFloorStack, mapFunction,
+    matchBuildings, ownSpaceProps, parseTransferFile, planCategoryTransfer, planFunctions,
+} from '../../src/transfer';
 
 const LONDON: [number, number] = [51.5072, -0.1276];
 
@@ -164,6 +168,99 @@ export const run = async () => {
             === JSON.stringify([['h', 'i'], ['1,5', 'q"t']]));
         const latin = new Uint8Array([0x41, 0x72, 0x65, 0x61, 0x20, 0x6d, 0xb2]).buffer; // "Area m²" in Windows-1252
         check('table: Windows-1252 bytes decode (Excel plain CSV)', decodeText(latin) === 'Area m²', decodeText(latin));
+    });
+
+    await test('project transfer', () => {
+        // Source site, and the same site in a new project whose reference point is 12.3 m east, 4.5 m south.
+        const at = (path: string, x: number, y: number, height: number, footprintArea: number): Placed =>
+            ({ path, centre: { x, y, z: height / 2 }, height, footprintArea });
+        const source = [at('s1', 0, 0, 20, 400), at('s2', 40, 0, 35, 250), at('s3', 0, 50, 12, 900), at('s4', 80, 80, 50, 300)];
+        const dx = 12.3, dy = -4.5;
+        // s4 is missing in the new project (a building only in that proposal); t9 exists only there.
+        const target = [at('t3', dx, 50 + dy, 12, 900), at('t1', dx + 0.4, dy - 0.2, 20.2, 404), at('t2', 40 + dx, dy, 35, 250), at('t9', -200, 0, 20, 400)];
+        const zero = matchBuildings(source, target, { x: 0, y: 0 });
+        const { shift, matched } = detectShift(source, target);
+        check('transfer: with no shift, an offset site matches nothing', zero.length === 0, zero);
+        check('transfer: the site offset is found (12.3 m east, 4.5 m south)', near(shift.x, dx, 0.05) && near(shift.y, dy, 0.05) && matched === 3, { shift, matched });
+        const pairs = matchBuildings(source, target, shift);
+        check('transfer: buildings pair by position, one to one, and the missing one is left out',
+            JSON.stringify(pairs.map((p) => [p.source, p.target])) === JSON.stringify([[0, 't1'], [1, 't2'], [2, 't3']]), pairs);
+        const same = detectShift(source, source.map((b, i) => ({ ...b, path: `x${i}` })));
+        check('transfer: identical sites need no shift', same.shift.x === 0 && same.shift.y === 0 && same.matched === 4, same);
+        // A similar building elsewhere must not drag the whole site: here only one pair agrees on any offset.
+        const lone = detectShift([at('a', 0, 0, 20, 400), at('b', 100, 0, 30, 200)], [at('c', 0.5, 0, 20, 400), at('d', 500, 500, 30, 200)]);
+        check('transfer: a lone look-alike far away does not beat matching in place', lone.shift.x === 0 && lone.matched === 1, lone);
+
+        // Categories: added by name with the source colours; blanks leave the target alone.
+        const sourceCats = [{ id: 'a', name: 'Phase', values: [{ id: 'p1', name: 'Phase 1', color: '#123456' }, { id: 'p2', name: 'Phase 2', color: '#654321' }] }];
+        const targetCats = [{ id: 'z', name: 'phase', values: [{ id: 'q1', name: 'PHASE 1', color: '#000000' }] }];
+        const plan = planCategoryTransfer(sourceCats, [{ values: { Phase: 'Phase 2', Use: 'Office' } }, { values: {} }],
+            [{ source: 0, target: 't1' }, { source: 1, target: 't2' }], targetCats, { z: { t2: 'q1' } });
+        const phase = plan.categories.find((c) => c.id === 'z')!;
+        const p2 = phase.values.find((v) => v.name === 'Phase 2');
+        const use = plan.categories.find((c) => c.name === 'Use');
+        check('transfer: categories match by name ignoring case, new values keep source colours',
+            plan.categories.length === 2 && phase.values.length === 2 && p2?.color === '#654321' && targetCats[0].values.length === 1, plan.categories);
+        check('transfer: values set on paired buildings; a blank leaves the existing value',
+            plan.assignments.z.t1 === p2?.id && plan.assignments.z.t2 === 'q1' && plan.assignments[use!.id].t1 === use!.values[0].id
+            && plan.changedBuildings === 1, plan.assignments);
+
+        // Building functions: matched by name, built-ins keep their IDs.
+        const srcFns = [{ id: 'residential', name: 'Residential' }, { id: 'f-retail', name: 'Retail', color: '#ff0000' }, { id: 'f-office', name: 'Office' }];
+        const tgtFns = [{ id: 'residential', name: 'Residential' }, { id: 'n-office', name: 'office' }];
+        const fp = planFunctions(srcFns, tgtFns);
+        check('transfer: only functions missing by name are created', fp.missing.length === 1 && fp.missing[0].name === 'Retail', fp.missing);
+        check('transfer: function IDs map by name, built-ins by ID',
+            mapFunction('f-office', srcFns, tgtFns) === 'n-office' && mapFunction('residential', srcFns, tgtFns) === 'residential'
+            && mapFunction('Office', srcFns, tgtFns) === 'n-office' && mapFunction('f-retail', srcFns, tgtFns) === undefined);
+
+        // Floors: the source has retail on the ground floor's west half; the target is the same building drawn
+        // separately (other IDs, other local origin, offset site), all unspecified, with its upper floor wound clockwise.
+        const src = graphOf([
+            { height: 4, spaces: [{ rect: [0, 0, 10, 20], function: 'f-retail' }, { rect: [10, 0, 20, 20], function: 'f-office' }] },
+            { height: 3, spaces: [{ rect: [0, 0, 20, 20], function: 'residential' }] },
+        ], 'src') as GraphBuilding;
+        const tgt = graphOf([
+            { height: 4, spaces: [{ rect: [-10, -10, 0, 10] }, { rect: [0, -10, 10, 10] }] },
+            { height: 3, spaces: [{ rect: [-10, -10, 10, 10], clockwise: true }] },
+        ], 'tgt') as GraphBuilding;
+        const move = (x: number, y: number, z = 0) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
+        // Source element at (100, 200); target local origin is the building centre, so (110 + dx, 210 + dy).
+        const copied = copySpaceFunctions({ graph: tgt, transform: move(110 + dx, 210 + dy) }, { graph: src, transform: move(100, 200) }, { x: dx, y: dy });
+        const fnOf = (level: number, space: number) => copied.props.get(tgt.levels[level].spaces[space].id)?.function;
+        check('transfer: each space takes the function of the source space under it, storey by storey',
+            copied.copied === 3 && copied.kept === 0 && fnOf(0, 0) === 'f-retail' && fnOf(0, 1) === 'f-office' && fnOf(1, 0) === 'residential',
+            [...copied.props.values()]);
+        // Ground 30 m higher in the new project: storeys no longer line up by height.
+        const raised = copySpaceFunctions({ graph: tgt, transform: move(110 + dx, 210 + dy, 30) }, { graph: src, transform: move(100, 200) }, { x: dx, y: dy });
+        check('transfer: with the ground at another level, same storey count matches storey by storey', raised.copied === 3, raised.copied);
+        const taller = graphOf([...[0, 1, 2].map(() => ({ height: 3, spaces: [{ rect: [-10, -10, 10, 10] as [number, number, number, number] }] }))], 'tall') as GraphBuilding;
+        const offStorey = copySpaceFunctions({ graph: taller, transform: move(110 + dx, 210 + dy, 30) }, { graph: src, transform: move(100, 200) }, { x: dx, y: dy });
+        check('transfer: spaces with no source storey to match keep their own function', offStorey.copied === 0 && offStorey.kept === 3, offStorey);
+
+        const tgtAfter = [...tgtFns, { id: 'n-retail', name: 'Retail' }];
+        const stack = graphToFloorStack(tgt, copied.props, (v) => mapFunction(v, srcFns, tgtAfter));
+        const area = (plan: (typeof stack.plans)[number], ids: string[]) => {
+            const pts = ids.map((id) => plan.vertices.find((v) => v.id === id)!);
+            let a = 0;
+            pts.forEach((p, i) => { const q = pts[(i + 1) % pts.length]; a += p.x * q.y - q.x * p.y; });
+            return a / 2;
+        };
+        const units = stack.plans.flatMap((pl) => pl.units.map((u) => ({ fn: u.functionId, a: area(pl, u.polygon) })));
+        check('transfer: floor stack keeps storey heights, one plan per storey',
+            JSON.stringify(stack.floors) === JSON.stringify([{ planId: 'plan-0', height: 4 }, { planId: 'plan-1', height: 3 }]), stack.floors);
+        check('transfer: units carry target function IDs and every outline is counter-clockwise',
+            JSON.stringify(units.map((u) => u.fn)) === JSON.stringify(['n-retail', 'n-office', 'residential']) && units.every((u) => u.a > 0)
+            && near(units[0].a, 200, 1e-9) && near(units[2].a, 400, 1e-9), units);
+        const own = graphToFloorStack(src, ownSpaceProps(src), (v) => v);
+        check('transfer: a building rebuilt from its own floors keeps its functions',
+            JSON.stringify(own.plans.flatMap((pl) => pl.units.map((u) => u.functionId))) === JSON.stringify(['f-retail', 'f-office', 'residential']));
+
+        const tri = new Float32Array([0, 0, 0, 1.5, -2.25, 3, 1e6, 0.1, -7]);
+        check('transfer: mesh survives base64 and back', JSON.stringify([...decodeMesh(encodeMesh(tri))]) === JSON.stringify([...tri]));
+        check('transfer: other JSON files are refused with a reason',
+            !parseTransferFile('{"a":1}').ok && !parseTransferFile('nope').ok
+            && !parseTransferFile(JSON.stringify({ format: 'as-forma-building-transfer', version: 99, buildings: [] })).ok);
     });
 
     return results;

@@ -546,6 +546,18 @@ button {
     border-left-color: var(--error-bg);
 }
 
+.transfer-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    margin-bottom: 0.4em;
+}
+
+.transfer-error {
+    white-space: pre-line;
+    color: var(--error-bg);
+}
+
 /* ============================================================
    Sort controls
    ============================================================ */

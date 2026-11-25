@@ -30,10 +30,10 @@ screenshots and a run stamp go to `dev-tools/.out/` (git-ignored).
 
 | Suite | Runs in | What it covers |
 |---|---|---|
-| `pure` | node | `sunPosition`, `timeZone` (incl. clock changes in both hemispheres), `silhouette`, `presets`, `studySheet.studyTimes`, `table` parsing |
+| `pure` | node | `sunPosition`, `timeZone` (incl. clock changes in both hemispheres), `silhouette`, `presets`, `studySheet.studyTimes`, `table` parsing, `transfer` (matching and site offset, categories, function mapping, floor functions copied between storeys, floor-stack winding) |
 | `engine` | headless Chromium, SwiftShader WebGL | `PanelRenderer` measured in pixels: shadow length against `height / tan(elevation)` at 45°, 20° and 10°; soft-shadow penumbra and length; banded versus single-band averaging; transparent export alpha; export size and aspect; layered shadow masks with and without context |
 | `component` | headless Chromium | `<RenderEngine>` driven like a user: load, presets keeping export settings, saved presets (storage, reload, duplicate names, view-only users), soft preview, sun modes and *Set Forma's sun*, shadow study and layered image downloads, PNG export size, project with no location |
-| `panel` | headless Chromium | The whole panel (`src/index.tsx`): tabs and keyboard navigation, building list and camera move, colour by / apply / clear, the render keeping its loaded scene across tab switches, CSV download |
+| `panel` | headless Chromium | The whole panel (`src/index.tsx`): tabs and keyboard navigation, building list and camera move, colour by / apply / clear, the render keeping its loaded scene across tab switches, CSV download, project transfer (export from one stub project, import into another offset by 7 m × 3 m with a building missing; also saves `shots/panel-transfer-preview.png`) |
 | `shots` | headless Chromium | Not a test. Full-page PNGs of the whole panel at 380 px wide, light and dark: Metrics (also with a building selected and a category open), Render (loaded, and with the shadow-study export and custom sun open) and Data |
 
 ## Files
@@ -43,7 +43,10 @@ screenshots and a run stamp go to `dev-tools/.out/` (git-ignored).
 - `stubs/forma.ts`: the Forma stand-in. Scene and project settings live on `globalThis.__formaScene`,
   storage on `globalThis.__storage` (survives unmount and remount), calls that change Forma are logged on
   `globalThis.__formaCalls`, and `globalThis.__moveCamera(state)` plays a camera move to subscribers.
-  Default scene: three boxes in London (`Europe/London`), sun at 12:00 UTC on 21 June 2026.
+  Default scene: three boxes in London (`Europe/London`), sun at 12:00 UTC on 21 June 2026, built-in building
+  functions only and no floor data. `scene.floors[path]` gives a building a `graphBuilding` made of rectangles
+  (`graphOf` in `lib/scene.ts`). A page can start with its own scene and storage: the panel suite's
+  `openPage({ scene, storage })` sets them before the stub loads (missing scene fields take the defaults).
 - `lib/scene.ts`: outward-wound boxes, prisms and ground quads. `lib/check.ts`: `check`, `near`, `test`.
 - `tests/*.test.ts` run in node; `tests/*.page.ts(x)` are browser entries; `tests/*.spec.mjs` drive
   pages from node with Playwright.
