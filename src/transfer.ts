@@ -552,3 +552,93 @@ export const decodeMesh = (text: string): Float32Array => {
     for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
     return new Float32Array(bytes.buffer, 0, bytes.length >> 2);
 };
+
+// -------------------------------------------------------------
+// Mesh → plain block (fallback for buildings Forma refuses as meshes)
+// -------------------------------------------------------------
+export interface MeshBlock {
+    /** World position of the block's local origin (lowest corner of its bounding box). */
+    origin: [number, number, number];
+    request: FloorStackRequest;
+    floors: number;
+}
+
+/**
+ * Rebuilds a building as an extruded block: traces the outline of the mesh's
+ * lowest faces, then stacks floors of about `storey` m up to the mesh's height.
+ * The roof shape is lost. Returns null when no outline can be found.
+ */
+export const meshToBlock = (world: ArrayLike<number>, functionId?: string, storey = 3.5): MeshBlock | null => {
+    let minX = Infinity, minY = Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < world.length; i += 3) {
+        minX = Math.min(minX, world[i]); minY = Math.min(minY, world[i + 1]);
+        minZ = Math.min(minZ, world[i + 2]); maxZ = Math.max(maxZ, world[i + 2]);
+    }
+    const height = maxZ - minZ;
+    if (!(height > 0.5)) return null;
+    // Edges of the faces lying on the lowest level; an edge used once is on the outline.
+    const key = (x: number, y: number) => `${Math.round(x * 1e3)},${Math.round(y * 1e3)}`;
+    const point = new Map<string, Pt>();
+    const edges = new Map<string, [string, string]>();
+    const uses = new Map<string, number>();
+    for (let t = 0; t + 8 < world.length; t += 9) {
+        if ([2, 5, 8].some((k) => world[t + k] - minZ > 0.05)) continue;
+        const ids = [0, 3, 6].map((k) => {
+            const id = key(world[t + k], world[t + k + 1]);
+            point.set(id, [world[t + k] - minX, world[t + k + 1] - minY]);
+            return id;
+        });
+        for (let e = 0; e < 3; e++) {
+            const a = ids[e], b = ids[(e + 1) % 3];
+            if (a === b) continue;
+            const k = a < b ? `${a}|${b}` : `${b}|${a}`;
+            uses.set(k, (uses.get(k) ?? 0) + 1);
+            edges.set(k, [a, b]);
+        }
+    }
+    const next = new Map<string, string[]>();
+    for (const [k, n] of uses) if (n === 1) {
+        const [a, b] = edges.get(k)!;
+        (next.get(a) ?? next.set(a, []).get(a)!).push(b);
+        (next.get(b) ?? next.set(b, []).get(b)!).push(a);
+    }
+    // Walk the outline edges into closed loops.
+    const seen = new Set<string>();
+    const loops: Pt[][] = [];
+    for (const start of next.keys()) {
+        if (seen.has(start)) continue;
+        const ids = [start];
+        seen.add(start);
+        let cur = start;
+        for (;;) {
+            const n = (next.get(cur) ?? []).find((c) => !seen.has(c));
+            if (!n) break;
+            ids.push(n); seen.add(n); cur = n;
+        }
+        const pts = ids.map((id) => point.get(id)!);
+        // Drop points on a straight line.
+        const keep = pts.filter((p, i) => {
+            const a = pts[(i + pts.length - 1) % pts.length], b = pts[(i + 1) % pts.length];
+            return Math.abs((p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0])) > 1e-3;
+        });
+        if (keep.length >= 3 && Math.abs(signedArea(keep)) > 1) loops.push(keep);
+    }
+    if (!loops.length) return null;
+    loops.sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)));
+    const vertices: FloorStackRequest['plans'][number]['vertices'] = [];
+    const ring = (pts: Pt[]) => {
+        const ordered = signedArea(pts) < 0 ? [...pts].reverse() : pts;
+        return ordered.map(([x, y]) => { const id = `v${vertices.length}`; vertices.push({ id, x, y }); return id; });
+    };
+    const polygon = ring(loops[0]);
+    const holes = loops.slice(1).map(ring);
+    const floors = Math.max(1, Math.round(height / storey));
+    return {
+        origin: [minX, minY, minZ],
+        floors,
+        request: {
+            floors: Array.from({ length: floors }, () => ({ planId: 'plan-0', height: height / floors })),
+            plans: [{ id: 'plan-0', vertices, units: [{ polygon, holes, ...(functionId ? { functionId } : {}) }] }],
+        },
+    };
+};

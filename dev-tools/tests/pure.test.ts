@@ -13,7 +13,7 @@ import { studyTimes } from '../../src/studySheet';
 import { decodeText, parseTable, toCsv } from '../../src/table';
 import {
     FLOOR_STACK_ID, GraphBuilding, Placed, copySpaceFunctions, decodeMesh, detectShift, encodeMesh, graphToFloorStack, mapFunction,
-    matchBuildings, ownSpaceProps, parseTransferFile, planCategoryTransfer, planFunctions,
+    matchBuildings, meshToBlock, ownSpaceProps, parseTransferFile, planCategoryTransfer, planFunctions,
 } from '../../src/transfer';
 
 const LONDON: [number, number] = [51.5072, -0.1276];
@@ -273,6 +273,22 @@ export const run = async () => {
         const own = graphToFloorStack(src, ownSpaceProps(src), (v) => v);
         check('transfer: a building rebuilt from its own floors keeps its functions',
             JSON.stringify(own.plans.flatMap((pl) => pl.units.map((u) => u.functionId))) === JSON.stringify(['f-retail', 'f-office', 'residential']));
+
+        // A 10 × 6 × 7 box at (100, 200, 5), written as 12 triangles with a diagonal split in each face.
+        const boxTris = (x0: number, y0: number, z0: number, w: number, d: number, h: number) => {
+            const c = (i: number): [number, number, number] => [x0 + (i & 1 ? w : 0), y0 + (i & 2 ? d : 0), z0 + (i & 4 ? h : 0)];
+            const quads = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
+            return new Float32Array(quads.flatMap(([a, b, cc, e]) => [...c(a), ...c(b), ...c(cc), ...c(a), ...c(cc), ...c(e)]));
+        };
+        const block = meshToBlock(boxTris(100, 200, 5, 10, 6, 7), 'f-office');
+        const bp = block?.request.plans[0];
+        const ring = bp?.units[0].polygon.map((id) => bp.vertices.find((v) => v.id === id)!) ?? [];
+        const ringArea = ring.reduce((a, p, i) => a + (p.x * ring[(i + 1) % ring.length].y - ring[(i + 1) % ring.length].x * p.y) / 2, 0);
+        check('transfer: a box mesh becomes a block with its outline, height and function',
+            !!block && block.floors === 2 && JSON.stringify(block.origin) === '[100,200,5]' && ring.length === 4 && near(ringArea, 60, 1e-6)
+            && near(block.request.floors.reduce((a, f) => a + f.height, 0), 7, 1e-9) && bp!.units[0].functionId === 'f-office'
+            && FLOOR_STACK_ID.test(bp!.id) && bp!.vertices.every((v) => FLOOR_STACK_ID.test(v.id)), block);
+        check('transfer: a mesh with no height gives no block', meshToBlock(boxTris(0, 0, 0, 5, 5, 0.1)) === null);
 
         const tri = new Float32Array([0, 0, 0, 1.5, -2.25, 3, 1e6, 0.1, -7]);
         check('transfer: mesh survives base64 and back', JSON.stringify([...decodeMesh(encodeMesh(tri))]) === JSON.stringify([...tri]));
