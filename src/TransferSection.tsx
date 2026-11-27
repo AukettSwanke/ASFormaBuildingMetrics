@@ -109,6 +109,8 @@ interface Preview {
 }
 
 const label = (b: TransferBuilding) => b.name || `Building ${b.number}`;
+/** The name sent to Forma: every mesh building refused with an empty 400 had a "#" in its name. */
+const elementName = (b: TransferBuilding) => label(b).replace(/#/g, '').replace(/\s+/g, ' ').trim() || `Building ${b.number}`;
 
 const buildPreview = async (file: TransferFile, buildings: TransferSource[], onStep: (text: string) => void): Promise<Preview> => {
     const { shift } = detectShift(file.buildings, buildings);
@@ -327,15 +329,25 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                                 local[k] = world[k] - ox; local[k + 1] = world[k + 1] - oy; local[k + 2] = world[k + 2] - oz;
                             }
                             const { blobId } = await step('uploading its shape', () => Forma.integrateElements.uploadFile({
-                                data: encodeGlb(local, { name: label(b), rgba: MESH_RGBA }),
+                                data: encodeGlb(local, { name: elementName(b), rgba: MESH_RGBA }),
                             }));
                             const functionId = toTarget(b.functionId);
-                            const { urn } = await step('creating the building element', () => Forma.integrateElements.createElementV2({
-                                properties: { name: label(b), category: BUILDING_CATEGORY, ...(functionId ? { functionId } : {}) },
+                            const make = (withFunction: boolean) => Forma.integrateElements.createElementV2({
+                                properties: { name: elementName(b), category: BUILDING_CATEGORY, ...(withFunction && functionId ? { functionId } : {}) },
                                 representations: { volumeMesh: { type: 'linked', blobId } },
-                            }));
+                            });
+                            // Forma answers some of these with an empty 400; try again without the function before giving up.
+                            const { urn } = await step('creating the building element', async () => {
+                                try { return await make(true); } catch (e) {
+                                    if (!functionId) throw e;
+                                    console.warn('Transfer: element refused with functionId', functionId, e);
+                                    const r = await make(false);
+                                    problems.push(`${label(b)}: added without its building function (Forma refused "${functionId}")`);
+                                    return r;
+                                }
+                            });
                             const { path } = await step('placing it', () => Forma.elements.add({
-                                urn, name: label(b), transform: translationMatrix([ox + shift.x, oy + shift.y, oz]),
+                                urn, name: elementName(b), transform: translationMatrix([ox + shift.x, oy + shift.y, oz]),
                             }));
                             created.push({ source: index, target: path });
                         } else {
