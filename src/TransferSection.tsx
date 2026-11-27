@@ -353,7 +353,7 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                             } catch (meshError) {
                                 // Forma refuses these meshes with an empty 400 (cause unknown), so rebuild the building as a plain block instead.
                                 const block = meshToBlock(world, functionId);
-                                if (!block) throw meshError;
+                                if (!block) throw new Error(`${message(meshError)} (and no outline could be traced from its mesh, so it could not be added as a block)`);
                                 console.warn('Transfer: mesh refused, adding a plain block instead', meshError);
                                 const { urn } = await step('creating the block from its outline', () => Forma.elements.floorStack.createFromFloors(block.request));
                                 ({ path } = await step('placing the block', () => Forma.elements.add({

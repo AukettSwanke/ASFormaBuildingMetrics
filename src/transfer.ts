@@ -576,26 +576,39 @@ export const meshToBlock = (world: ArrayLike<number>, functionId?: string, store
     }
     const height = maxZ - minZ;
     if (!(height > 0.5)) return null;
-    // Edges of the faces lying on the lowest level; an edge used once is on the outline.
+    // The outline is the bottom edge of each wall (a near-vertical face with two corners on the lowest level), so
+    // it works whether or not the mesh has a floor. Without any walls, use the edges of the floor faces instead.
     const key = (x: number, y: number) => `${Math.round(x * 1e3)},${Math.round(y * 1e3)}`;
     const point = new Map<string, Pt>();
     const edges = new Map<string, [string, string]>();
     const uses = new Map<string, number>();
+    const addEdge = (a: string, b: string, count: number) => {
+        if (a === b) return;
+        const k = a < b ? `${a}|${b}` : `${b}|${a}`;
+        uses.set(k, (uses.get(k) ?? 0) + count);
+        edges.set(k, [a, b]);
+    };
+    const low = (z: number) => z - minZ <= 0.05;
+    const corner = (t: number, k: number) => {
+        const id = key(world[t + k], world[t + k + 1]);
+        point.set(id, [world[t + k] - minX, world[t + k + 1] - minY]);
+        return id;
+    };
+    const floorEdges: [string, string][] = [];
     for (let t = 0; t + 8 < world.length; t += 9) {
-        if ([2, 5, 8].some((k) => world[t + k] - minZ > 0.05)) continue;
-        const ids = [0, 3, 6].map((k) => {
-            const id = key(world[t + k], world[t + k + 1]);
-            point.set(id, [world[t + k] - minX, world[t + k + 1] - minY]);
-            return id;
-        });
-        for (let e = 0; e < 3; e++) {
-            const a = ids[e], b = ids[(e + 1) % 3];
-            if (a === b) continue;
-            const k = a < b ? `${a}|${b}` : `${b}|${a}`;
-            uses.set(k, (uses.get(k) ?? 0) + 1);
-            edges.set(k, [a, b]);
+        const [ux, uy, uz] = [world[t + 3] - world[t], world[t + 4] - world[t + 1], world[t + 5] - world[t + 2]];
+        const [vx, vy, vz] = [world[t + 6] - world[t], world[t + 7] - world[t + 1], world[t + 8] - world[t + 2]];
+        const n = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) || 1;
+        const nz = Math.abs(ux * vy - uy * vx) / n;
+        const lowCorners = [0, 1, 2].filter((c) => low(world[t + c * 3 + 2]));
+        if (nz < 0.2 && lowCorners.length === 2) {
+            addEdge(corner(t, lowCorners[0] * 3), corner(t, lowCorners[1] * 3), 1);
+        } else if (lowCorners.length === 3) {
+            const ids = [0, 3, 6].map((k) => corner(t, k));
+            for (let e = 0; e < 3; e++) floorEdges.push([ids[e], ids[(e + 1) % 3]]);
         }
     }
+    if (!uses.size) for (const [a, b] of floorEdges) addEdge(a, b, 1); // an edge shared by two floor faces is used twice, so drops out
     const next = new Map<string, string[]>();
     for (const [k, n] of uses) if (n === 1) {
         const [a, b] = edges.get(k)!;
