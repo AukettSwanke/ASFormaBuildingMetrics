@@ -330,10 +330,20 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                                 data: encodeGlb(local, { name: label(b), rgba: MESH_RGBA }),
                             }));
                             const functionId = toTarget(b.functionId);
-                            const { urn } = await step('creating the building element', () => Forma.integrateElements.createElementV2({
-                                properties: { name: label(b), category: BUILDING_CATEGORY, ...(functionId ? { functionId } : {}) },
+                            const make = (withFunction: boolean) => Forma.integrateElements.createElementV2({
+                                properties: { name: label(b), category: BUILDING_CATEGORY, ...(withFunction && functionId ? { functionId } : {}) },
                                 representations: { volumeMesh: { type: 'linked', blobId } },
-                            }));
+                            });
+                            // Forma answers some of these with an empty 400; try again without the function before giving up.
+                            const { urn } = await step('creating the building element', async () => {
+                                try { return await make(true); } catch (e) {
+                                    if (!functionId) throw e;
+                                    console.warn('Transfer: element refused with functionId', functionId, e);
+                                    const r = await make(false);
+                                    problems.push(`${label(b)}: added without its building function (Forma refused "${functionId}")`);
+                                    return r;
+                                }
+                            });
                             const { path } = await step('placing it', () => Forma.elements.add({
                                 urn, name: label(b), transform: translationMatrix([ox + shift.x, oy + shift.y, oz]),
                             }));
