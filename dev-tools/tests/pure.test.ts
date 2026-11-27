@@ -288,6 +288,12 @@ export const run = async () => {
             !!block && block.floors === 2 && JSON.stringify(block.origin) === '[100,200,5]' && ring.length === 4 && near(ringArea, 60, 1e-6)
             && near(block.request.floors.reduce((a, f) => a + f.height, 0), 7, 1e-9) && bp!.units[0].functionId === 'f-office'
             && FLOOR_STACK_ID.test(bp!.id) && bp!.vertices.every((v) => FLOOR_STACK_ID.test(v.id)), block);
+        // Real meshes may have no underside: drop the floor quad (the first two triangles) and the block must be the same.
+        const open = boxTris(100, 200, 5, 10, 6, 7).slice(18);
+        const openBlock = meshToBlock(open);
+        check('transfer: a box mesh with no floor still gives the same outline',
+            !!openBlock && openBlock.request.plans[0].units[0].polygon.length === 4 && openBlock.floors === 2
+            && JSON.stringify(openBlock.origin) === '[100,200,5]', openBlock);
         check('transfer: a mesh with no height gives no block', meshToBlock(boxTris(0, 0, 0, 5, 5, 0.1)) === null);
 
         const tri = new Float32Array([0, 0, 0, 1.5, -2.25, 3, 1e6, 0.1, -7]);
