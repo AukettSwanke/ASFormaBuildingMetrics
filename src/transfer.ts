@@ -464,8 +464,9 @@ export const FLOOR_STACK_ID = /^[a-zA-Z0-9-]{2,20}$/;
  * the target project's IDs.
  *
  * Forma's own point IDs can't be passed on (they break the ID rule above), so
- * each plan's vertices are renumbered "v0", "v1"…, merging points that sit at
- * the same place (to 0.1 mm). Repeated points in a loop are dropped, and loops
+ * each vertex is renumbered "v0", "v1"… with numbers unique across all plans
+ * of the building (Forma rejects a repeat in another plan), merging points
+ * within one plan that sit at the same place (to 0.1 mm). Repeated points in a loop are dropped, and loops
  * left with fewer than three points are skipped.
  */
 export const graphToFloorStack = (
@@ -473,6 +474,8 @@ export const graphToFloorStack = (
 ): FloorStackRequest => {
     const floors: FloorStackRequest['floors'] = [];
     const plans: FloorStackRequest['plans'] = [];
+    // Forma needs vertex IDs unique across the whole building, not just per plan.
+    let nextVertex = 0;
     graph.levels.forEach((level, index) => {
         const id = `plan-${index}`;
         const surfaces = new Map(level.surfaces.map((s) => [s.id, s]));
@@ -482,7 +485,7 @@ export const graphToFloorStack = (
             const key = `${Math.round(x * 1e4)},${Math.round(y * 1e4)}`;
             let v = byPlace.get(key);
             if (!v) {
-                v = `v${vertices.length}`;
+                v = `v${nextVertex++}`;
                 byPlace.set(key, v);
                 vertices.push({ id: v, x, y });
             }
