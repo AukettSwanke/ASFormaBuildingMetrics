@@ -6,7 +6,7 @@ import {
     BuildingFunction, BuildingPair, FloorStack, GraphBuilding, Matrix, Placed, Shift, SpaceProps, TRANSFER_FORMAT,
     TRANSFER_VERSION, TransferBuilding, TransferFile, copySpaceFunctions, decodeMesh, detectShift, encodeMesh,
     functionsChange, graphToFloorStack, mapFunction, matchBuildings, ownSpaceProps, pairStacks, parseTransferFile,
-    planCategoryTransfer, planFunctions, shifted,
+    meshToBlock, planCategoryTransfer, planFunctions, shifted,
 } from "./transfer";
 
 // =============================================================
@@ -303,6 +303,7 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
 
             // 3. Buildings missing here.
             const created: { source: number; target: string }[] = [];
+            const blocks: string[] = [];
             if (doCreate && preview.missing.length) {
                 for (const [i, index] of preview.missing.entries()) {
                     const b = file.buildings[index];
@@ -336,27 +337,31 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                             const finite = world.every(Number.isFinite);
                             // Shown with any failure below, to find what refused meshes have in common.
                             meshInfo = `${world.length / 9} triangles, ${(world.length * 8 / 1024).toFixed(0)} KB, ${sx.toFixed(1)} × ${sy.toFixed(1)} × ${sz.toFixed(1)} m${finite ? '' : ', NON-FINITE VALUES'}`;
-                            const { blobId } = await step('uploading its shape', () => Forma.integrateElements.uploadFile({
-                                data: encodeGlb(local, { name: elementName(b), rgba: MESH_RGBA }),
-                            }));
                             const functionId = toTarget(b.functionId);
-                            const make = (withFunction: boolean) => Forma.integrateElements.createElementV2({
-                                properties: { name: elementName(b), category: BUILDING_CATEGORY, ...(withFunction && functionId ? { functionId } : {}) },
-                                representations: { volumeMesh: { type: 'linked', blobId } },
-                            });
-                            // Forma answers some of these with an empty 400; try again without the function before giving up.
-                            const { urn } = await step('creating the building element', async () => {
-                                try { return await make(true); } catch (e) {
-                                    if (!functionId) throw e;
-                                    console.warn('Transfer: element refused with functionId', functionId, e);
-                                    const r = await make(false);
-                                    problems.push(`${label(b)}: added without its building function (Forma refused "${functionId}")`);
-                                    return r;
-                                }
-                            });
-                            const { path } = await step('placing it', () => Forma.elements.add({
-                                urn, name: elementName(b), transform: translationMatrix([ox + shift.x, oy + shift.y, oz]),
-                            }));
+                            let path: string;
+                            try {
+                                const { blobId } = await step('uploading its shape', () => Forma.integrateElements.uploadFile({
+                                    data: encodeGlb(local, { name: elementName(b), rgba: MESH_RGBA }),
+                                }));
+                                const { urn } = await step('creating the building element', () => Forma.integrateElements.createElementV2({
+                                    properties: { name: elementName(b), category: BUILDING_CATEGORY, ...(functionId ? { functionId } : {}) },
+                                    representations: { volumeMesh: { type: 'linked', blobId } },
+                                }));
+                                ({ path } = await step('placing it', () => Forma.elements.add({
+                                    urn, name: elementName(b), transform: translationMatrix([ox + shift.x, oy + shift.y, oz]),
+                                })));
+                            } catch (meshError) {
+                                // Forma refuses these meshes with an empty 400 (cause unknown), so rebuild the building as a plain block instead.
+                                const block = meshToBlock(world, functionId);
+                                if (!block) throw meshError;
+                                console.warn('Transfer: mesh refused, adding a plain block instead', meshError);
+                                const { urn } = await step('creating the block from its outline', () => Forma.elements.floorStack.createFromFloors(block.request));
+                                ({ path } = await step('placing the block', () => Forma.elements.add({
+                                    urn: urn as Urn, name: elementName(b),
+                                    transform: translationMatrix([block.origin[0] + shift.x, block.origin[1] + shift.y, block.origin[2]]),
+                                })));
+                                blocks.push(label(b));
+                            }
                             created.push({ source: index, target: path });
                         } else {
                             problems.push(`${label(b)}: the file has no geometry for it`);
@@ -366,6 +371,7 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                     }
                 }
                 done.push(`${plural(new Set(created.map((c) => c.source)).size, 'building')} added`);
+                if (blocks.length) problems.push(`${plural(blocks.length, 'building')} added as plain extruded blocks (Forma refused their meshes, so the roof shape is lost): ${blocks.join(', ')}`);
             }
 
             // 4. Categories, against the latest state, including buildings just added.
