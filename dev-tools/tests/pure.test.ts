@@ -260,6 +260,9 @@ export const run = async () => {
             validIds(stack) && !FLOOR_STACK_ID.test(Object.keys(tgt.levels[0].points)[0]), stack.plans[0].vertices.slice(0, 3));
         check('transfer: corners shared by neighbouring spaces become one vertex', stack.plans[0].vertices.length === 6,
             stack.plans[0].vertices.length);
+        const allIds = stack.plans.flatMap((pl) => pl.vertices.map((v) => v.id));
+        check('transfer: vertex IDs are unique across all plans of a building (Forma rejects repeats)',
+            stack.plans.length > 1 && new Set(allIds).size === allIds.length, allIds);
         // A loop with a repeated point and a closing point, and a sliver that collapses to two points.
         const messy = graphOf([{ height: 3, spaces: [{ rect: [0, 0, 10, 10] }, { rect: [20, 0, 20, 10] }] }], 'm') as GraphBuilding;
         const outer = messy.levels[0].spaces[0].outerLoop;
