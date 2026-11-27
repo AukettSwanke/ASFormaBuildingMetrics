@@ -307,6 +307,7 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                 for (const [i, index] of preview.missing.entries()) {
                     const b = file.buildings[index];
                     setBusy(`Adding building ${i + 1} of ${preview.missing.length}…`);
+                    let meshInfo = '';
                     try {
                         if (b.floorStacks.length) {
                             for (const stack of b.floorStacks) {
@@ -328,6 +329,13 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                             for (let k = 0; k < world.length; k += 3) {
                                 local[k] = world[k] - ox; local[k + 1] = world[k + 1] - oy; local[k + 2] = world[k + 2] - oz;
                             }
+                            let sx = 0, sy = 0, sz = 0;
+                            for (let k = 0; k < world.length; k += 3) {
+                                sx = Math.max(sx, world[k] - ox); sy = Math.max(sy, world[k + 1] - oy); sz = Math.max(sz, world[k + 2] - oz);
+                            }
+                            const finite = world.every(Number.isFinite);
+                            // Shown with any failure below, to find what refused meshes have in common.
+                            meshInfo = `${world.length / 9} triangles, ${(world.length * 8 / 1024).toFixed(0)} KB, ${sx.toFixed(1)} × ${sy.toFixed(1)} × ${sz.toFixed(1)} m${finite ? '' : ', NON-FINITE VALUES'}`;
                             const { blobId } = await step('uploading its shape', () => Forma.integrateElements.uploadFile({
                                 data: encodeGlb(local, { name: elementName(b), rgba: MESH_RGBA }),
                             }));
@@ -354,7 +362,7 @@ export function TransferSection({ buildings, categories, assignments, canEdit, d
                             problems.push(`${label(b)}: the file has no geometry for it`);
                         }
                     } catch (e) {
-                        problems.push(`${label(b)}: ${message(e)}`);
+                        problems.push(`${label(b)}: ${message(e)}${meshInfo ? ` [${meshInfo}]` : ''}`);
                     }
                 }
                 done.push(`${plural(new Set(created.map((c) => c.source)).size, 'building')} added`);
